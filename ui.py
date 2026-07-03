@@ -41,113 +41,145 @@ function toast(t){const el=$('toast');el.textContent=t;el.classList.add('on');se
 function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 '''
 
-DIRECTOR_HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CRM — Director</title><style>'''+CSS+'''</style></head><body>
-<header><h1>🎖 Director Console</h1><span class="sp"></span><span class="me">__ME__</span></header>
+DIRECTOR_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRM — Director</title><style>__CSS__
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.stat{background:#fff;border:1px solid #e3e8ef;border-radius:12px;padding:10px 14px;text-align:center}
+.stat .n{font-size:22px;font-weight:800}.stat .l{font-size:11px;color:#6b7788;text-transform:uppercase;letter-spacing:.4px}
+.preset{border:1.5px solid #cbd5e1;background:#fff;border-radius:10px;padding:10px 14px;cursor:pointer;font-size:13px;text-align:left}
+.preset b{display:block;font-size:13.5px}.preset span{font-size:11.5px;color:#6b7788}
+.preset.on{border-color:#2563eb;background:#eef4ff;box-shadow:0 0 0 2px #2563eb22}
+.presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:10px}
+.adv{display:none;border-top:1px dashed #e3e8ef;margin-top:10px;padding-top:8px}
+.adv.open{display:block}
+.linky{background:none;border:none;color:#2563eb;font-size:12px;cursor:pointer;text-decoration:underline;padding:0}
+.tabs{display:flex;gap:0;border-bottom:2px solid #e3e8ef;margin-bottom:12px;flex-wrap:wrap}
+.tab{padding:8px 16px;cursor:pointer;font-weight:600;font-size:13px;color:#6b7788;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.on{color:#1d4ed8;border-bottom-color:#2563eb}
+.bigassign{font-size:15px;padding:12px 26px}
+.prevrows{font-size:12.5px;margin-top:8px}.prevrows td{padding:3px 10px 3px 0}
+.stepnum{display:inline-flex;width:22px;height:22px;border-radius:50%;background:#101828;color:#fff;font-size:12px;font-weight:700;align-items:center;justify-content:center;margin-right:8px}
+</style></head><body>
+<header><h1>🎖 Director</h1><span class="sp"></span><span class="me">__ME__</span></header>
 <div class="wrap">
-<div class="panel"><h3>1 · Build a batch <span class="muted" style="font-size:11px">chips: 1× 🟢 include · 2× 🔴 exclude · 3× clear</span></h3>
- <div class="row"><span class="lbl">Qualified for</span><span id="quals"></span></div>
- <div class="row"><span class="lbl">Last connection</span><span class="seg" id="lcSeg"></span></div>
- <div class="row"><span class="lbl">Attempts since conn</span><span class="seg" id="asSeg"></span><span class="muted" style="font-size:11px">pick any</span>
-   <span class="lbl" style="min-width:auto">Total conn</span><span class="seg" id="tcSeg"></span></div>
- <div class="row"><span class="lbl">Age</span><span class="seg" id="ageSeg"></span>
-   <span class="lbl" style="min-width:auto">State</span><input id="state" style="width:64px" placeholder="FL">
-   <label class="chip" id="noflags" onclick="tg(this);pv()">No screening flags</label>
-   <label class="chip" id="never" onclick="tg(this);pv()">Never attempted</label></div>
- <div class="row"><span class="pcount" id="pcount">—</span><span class="muted">members match &amp; are not in an open batch (live)</span></div>
- <div class="row"><span class="lbl">Batch</span><input id="bname" placeholder="name e.g. Onapgo-FL-July">
-   <input id="bsize" type="number" value="25" style="width:70px" title="size"><select id="badv"></select>
-   <button class="good" onclick="createBatch()">Assign batch</button></div>
- <div class="row"><span class="lbl">Script hint</span><input id="bscript" style="flex:1" placeholder="extra note shown on every card of this batch (guides load automatically by stage)"></div>
+<div class="stats" id="stats"></div>
+<div class="panel"><h3><span class="stepnum">1</span>Who should we call?</h3>
+ <div class="presets" id="presets"></div>
+ <div id="filters" style="display:none">
+  <div class="row"><span class="lbl">Qualified for</span><span id="quals"></span></div>
+  <div class="row"><span class="lbl">Last connection</span><span class="seg" id="lcSeg"></span></div>
+  <div class="row"><span class="lbl">Attempts since conn</span><span class="seg" id="asSeg"></span>
+    <span class="lbl" style="min-width:auto">Total conn</span><span class="seg" id="tcSeg"></span></div>
+  <div class="row"><span class="lbl">Age</span><span class="seg" id="ageSeg"></span>
+    <span class="lbl" style="min-width:auto">State</span><input id="state" style="width:64px" placeholder="FL">
+    <label class="chip" id="noflags" onclick="tg(this);pv()">No screening flags</label>
+    <label class="chip" id="never" onclick="tg(this);pv()">Never attempted</label></div>
+ </div>
+ <button class="linky" id="toggleFilters">⚙ fine-tune filters</button>
+ <div class="row" style="margin-top:10px"><span class="pcount" id="pcount">—</span><span class="muted">members ready (not in an open batch)</span>
+  <button class="sec" id="peek">👀 preview first 10</button></div>
+ <div id="prevrows" class="prevrows"></div>
 </div>
-<div class="panel"><h3>2 · Batches & progress</h3><div id="batches"></div><div id="bdetail"></div></div>
-<div class="panel"><h3>3 · Program funnel <span class="muted">Initial → Pre-HCP → Post-HCP (open batches)</span></h3>
- <button class="sec" onclick="loadFunnel()">Refresh</button><div id="funnel"></div>
- <h3 style="margin-top:14px">Latest discussion-guide answers</h3><button class="sec" onclick="loadAnswers()">Refresh</button><div id="answers" style="max-height:280px;overflow-y:auto"></div></div>
-<div class="panel"><h3>3b · Scripts & guide editor <span class="muted">what advocates read on connect</span></h3>
- <button class="sec" onclick="loadScripts()">Load</button><div id="scripts"></div></div>
-<div class="panel"><h3>4 · Integrity flags</h3><button class="sec" onclick="loadFlags()">Refresh flags</button><div id="flags"></div></div>
-<div class="panel"><h3>5 · Team</h3><div id="users"></div>
- <div class="row"><input id="uemail" placeholder="advocate@yourorg.com"><input id="udisp" placeholder="display name" style="width:130px">
- <button onclick="addUser()">Add / update advocate</button></div></div>
-<div class="panel"><h3>6 · Audit trail (latest 300)</h3><button class="sec" onclick="loadAudit()">Load</button><div id="audit" style="max-height:300px;overflow-y:auto"></div></div>
+<div class="panel"><h3><span class="stepnum">2</span>Assign a batch</h3>
+ <div class="row">
+  <input id="bname" style="width:220px">
+  <select id="bsize"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
+  <span class="lbl" style="min-width:auto">to</span><select id="badv"></select>
+  <button class="good bigassign" onclick="createBatch()">Assign batch ➜</button></div>
+ <div class="row"><input id="bscript" style="flex:1" placeholder="optional note shown on every card (the approved guides load automatically)"></div>
+ <button class="linky" onclick="$('advadd').classList.toggle('open')">+ add a new advocate</button>
+ <div class="adv" id="advadd"><div class="row"><input id="uemail" placeholder="advocate@parkinsons.community"><input id="udisp" placeholder="display name" style="width:130px">
+  <button onclick="addUser()">Save advocate</button><span class="muted">they also need IAP access (see runbook)</span></div></div>
+</div>
+<div class="panel"><h3><span class="stepnum">3</span>Track</h3>
+ <div class="tabs" id="tabs"></div>
+ <div id="tabbody"></div>
+</div>
 </div><div class="toast" id="toast"></div>
-<script>'''+JS_COMMON+'''
+<script>__JSC__
 const QUALS=['Apokyn','Onapgo Qualified','Onapgo','Inbrija','Gocovri','Dyskinesia','N317 trial','IPX203 trial','OFF signals'];
 const LC=[['any','Any'],['never','Never'],['6m','< 6 mo'],['1y','6–12 mo'],['2y','1–2 yr'],['old','2 yr +']];
 const ASB=[['0','0'],['12','1–2'],['35','3–5'],['6p','6 +']];
 const TC=[['any','Any'],['0','0'],['1','1'],['2p','2 +']];
 const AGES=[['<50','< 50'],['50','50s'],['60','60s'],['70','70s'],['80','80 +'],['unk','?']];
 let lcSel='any',tcSel='any',asSel=new Set(),ageSel=new Set(),qInc=new Set(),qExc=new Set();
-function seg(id,buckets,single){$(id).innerHTML=buckets.map(b=>`<button data-b="${b[0]}" class="${(single&&b[0]==='any')?'on':''}">${b[1]}</button>`).join('');
- $(id).addEventListener('click',e=>{const b=e.target.closest('[data-b]');if(!b)return;const k=b.dataset.b;
-  if(single){if(id==='lcSeg')lcSel=k;else tcSel=k;$(id).querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.b===k));}
-  else{const set=id==='asSeg'?asSel:ageSel;if(set.has(k)){set.delete(k);b.classList.remove('on');}else{set.add(k);b.classList.add('on');}}
-  pv();});}
-seg('lcSeg',LC,true);seg('asSeg',ASB,false);seg('tcSeg',TC,true);seg('ageSeg',AGES,false);
+const PRESETS=[
+ {id:'fresh',name:'🎯 Fresh Onapgo prospects',desc:'Qualified (Onapgo/Apokyn), never attempted, no screening flags',
+  set:()=>{qInc=new Set(['Onapgo Qualified','Apokyn']);$('never').classList.add('on');$('noflags').classList.add('on');}},
+ {id:'warm',name:'📞 Follow-up: reached before',desc:'Connected in the past, quiet for 2+ years, OFF signals',
+  set:()=>{qInc=new Set(['OFF signals']);tcSel='2p';lcSel='old';}},
+ {id:'sweep',name:'🔁 Second-pass sweep',desc:'1–2 gentle attempts so far, never connected',
+  set:()=>{asSel=new Set(['12']);tcSel='0';}},
+ {id:'custom',name:'⚙ Custom',desc:'Start blank and fine-tune everything yourself',set:()=>{}}];
+function clearFilters(){lcSel='any';tcSel='any';asSel=new Set();ageSel=new Set();qInc=new Set();qExc=new Set();
+ $('state').value='';$('never').classList.remove('on');$('noflags').classList.remove('on');}
+$('presets').innerHTML=PRESETS.map(p=>`<button class="preset" data-p="${p.id}"><b>${p.name}</b><span>${p.desc}</span></button>`).join('');
+$('presets').addEventListener('click',e=>{const b=e.target.closest('[data-p]');if(!b)return;
+ document.querySelectorAll('.preset').forEach(x=>x.classList.toggle('on',x===b));
+ clearFilters();PRESETS.find(p=>p.id===b.dataset.p).set();drawSegs();drawQuals();
+ $('filters').style.display=b.dataset.p==='custom'?'':'none';autoname();pv();});
+function segHTML(id,buckets,cur,multi){$(id).innerHTML=buckets.map(b=>`<button data-b="${b[0]}" class="${(multi?cur.has(b[0]):cur===b[0])?'on':''}">${b[1]}</button>`).join('');}
+function drawSegs(){segHTML('lcSeg',LC,lcSel,false);segHTML('asSeg',ASB,asSel,true);segHTML('tcSeg',TC,tcSel,false);segHTML('ageSeg',AGES,ageSel,true);}
+function drawQuals(){document.querySelectorAll('#quals .chip').forEach(ch=>{const q=ch.dataset.q;
+ ch.classList.toggle('inc',qInc.has(q));ch.classList.toggle('exc',qExc.has(q));});}
+['lcSeg','tcSeg'].forEach(id=>$(id).addEventListener('click',e=>{const b=e.target.closest('[data-b]');if(!b)return;
+ if(id==='lcSeg')lcSel=b.dataset.b;else tcSel=b.dataset.b;drawSegs();pv();}));
+['asSeg','ageSeg'].forEach(id=>$(id).addEventListener('click',e=>{const b=e.target.closest('[data-b]');if(!b)return;
+ const set=id==='asSeg'?asSel:ageSel;const k=b.dataset.b;set.has(k)?set.delete(k):set.add(k);drawSegs();pv();}));
 $('quals').innerHTML=QUALS.map(q=>`<label class="chip" data-q="${q}">${q} <span class="n" data-qc="${q}"></span></label>`).join('');
 $('quals').addEventListener('click',e=>{const ch=e.target.closest('[data-q]');if(!ch)return;const q=ch.dataset.q;
- if(qInc.has(q)){qInc.delete(q);qExc.add(q);ch.classList.remove('inc');ch.classList.add('exc');}
- else if(qExc.has(q)){qExc.delete(q);ch.classList.remove('exc');}
- else{qInc.add(q);ch.classList.add('inc');}pv();});
-api('/api/dir/qual_counts',{method:'POST',body:'{}'}).then(cs=>{for(const q in cs){const el=document.querySelector(`[data-qc="${q}"]`);if(el)el.textContent=cs[q].toLocaleString();}});
+ if(qInc.has(q)){qInc.delete(q);qExc.add(q);}else if(qExc.has(q)){qExc.delete(q);}else{qInc.add(q);}drawQuals();autoname();pv();});
+$('toggleFilters').addEventListener('click',()=>{const f=$('filters');f.style.display=f.style.display==='none'?'':'none';});
 function tg(el){el.classList.toggle('on')}
 function filters(){return{qual_inc:[...qInc],qual_exc:[...qExc],lc:lcSel,tc:tcSel,att_since:[...asSel],ages:[...ageSel],
- never_attempted:$('never').classList.contains('on'),exclude_flags:$('noflags').classList.contains('on'),
- state:$('state').value};}
+ never_attempted:$('never').classList.contains('on'),exclude_flags:$('noflags').classList.contains('on'),state:$('state').value};}
+function autoname(){const p=document.querySelector('.preset.on');const base=p&&p.dataset.p!=='custom'?p.querySelector('b').textContent.replace(/^[^ ]+ /,'').split(':')[0].replace(/\s+/g,'-'):([...qInc][0]||'Batch');
+ $('bname').value=(base+'-'+new Date().toISOString().slice(5,10)).replace(/[^\w-]+/g,'');}
 let pvT=null;
-function pv(){clearTimeout(pvT);pvT=setTimeout(async()=>{const r=await api('/api/dir/preview',{method:'POST',body:JSON.stringify(filters())});$('pcount').textContent=r.count.toLocaleString();},250);}
-$('state').addEventListener('input',pv);pv();
+function pv(){clearTimeout(pvT);$('prevrows').innerHTML='';pvT=setTimeout(async()=>{const r=await api('/api/dir/preview',{method:'POST',body:JSON.stringify(filters())});$('pcount').textContent=r.count.toLocaleString();},250);}
+$('state').addEventListener('input',()=>pv());
+$('peek').addEventListener('click',async()=>{const r=await api('/api/dir/preview_rows',{method:'POST',body:JSON.stringify(filters())});
+ $('prevrows').innerHTML='<table>'+r.rows.map(x=>`<tr><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.state)}</td><td>${esc((x.quals||'').split(';').slice(0,3).join(', '))}</td><td class="muted">${x.last_conn?('last conn '+x.last_conn):'never connected'} · ${x.att} att</td></tr>`).join('')+'</table>';});
 async function createBatch(){const f=filters();f.name=$('bname').value;f.size=$('bsize').value;f.advocate=$('badv').value;f.script=$('bscript').value;
- const r=await api('/api/dir/batch',{method:'POST',body:JSON.stringify(f)});toast('Batch #'+r.batch_id+' assigned ('+r.assigned+' members)');loadBatches();pv();}
-async function loadBatches(){const bs=await api('/api/dir/batches');
- $('batches').innerHTML='<table><tr><th>#</th><th>Name</th><th>Advocate</th><th>Progress</th><th>Callbacks</th><th>Status</th><th></th></tr>'+
- bs.map(b=>`<tr><td>${b.id}</td><td>${esc(b.name)}</td><td>${esc(b.advocate)}</td><td>${b.done||0}/${b.total}</td><td>${b.callbacks||0}</td><td>${b.status}</td>
- <td><button class="sec" onclick="detail(${b.id})">detail</button> ${b.status==='open'?`<button class="bad" onclick="closeB(${b.id})">close</button>`:''}</td></tr>`).join('')+'</table>';}
-async function detail(id){const d=await api('/api/dir/batch/'+id);
- $('bdetail').innerHTML='<h3 style="margin-top:12px">Batch '+id+'</h3><div>'+d.summary.map(s=>`<span class="qtag">${esc(s.disposition)}: ${s.n}</span>`).join(' ')+'</div>'+
- '<table><tr><th>When</th><th>Who</th><th>Member</th><th>Disposition</th><th>Note</th><th>Handle s</th></tr>'+
- d.dispositions.map(x=>`<tr><td>${x.ts}</td><td>${esc(x.actor)}</td><td>${esc(x.first)} ${esc(x.last)}</td><td>${esc(x.disposition)}</td><td>${esc(x.note)}</td><td>${x.handle_secs?Math.round(x.handle_secs):''}</td></tr>`).join('')+'</table>';}
-async function closeB(id){await api('/api/dir/close_batch/'+id,{method:'POST'});loadBatches();}
-async function loadFlags(){const f=await api('/api/dir/flags');
- const sec=(t,rows,cols)=>rows.length?`<h3 style="margin-top:10px">${t} (${rows.length})</h3><table><tr>${cols.map(c=>'<th>'+c+'</th>').join('')}</tr>`+rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(r[c])+'</td>').join('')+'</tr>').join('')+'</table>':'';
- $('flags').innerHTML=(sec('Dispositions faster than 20s',f.fast_dispositions,['ts','actor','member_id','disposition','handle_secs'])+
- sec('“Connected” under 60s after dialing',f.connected_too_fast,['ts','actor','member_id','disposition','secs_after_click'])+
- sec('Disposition without any call/text click',f.disposition_without_any_click,['ts','actor','member_id','disposition']))||'<span class="muted">no flags 🎉</span>';}
-async function addUser(){await api('/api/dir/user',{method:'POST',body:JSON.stringify({email:$('uemail').value,display:$('udisp').value})});toast('saved');loadUsers();}
-async function loadFunnel(){const f=await api('/api/dir/funnel');
- const st={};f.forEach(r=>{st[r.stage]=st[r.stage]||{};st[r.stage][r.state]=r.n});
- const stages=['initial','pre_hcp','post_hcp','complete','missed_post','no_appt','dq'];
- $('funnel').innerHTML='<table><tr><th>Stage</th><th>Pending</th><th>Callback set</th><th>Done</th></tr>'+stages.map(sg=>{const x=st[sg]||{};
-  return `<tr><td><b>${sg.replace('_',' ')}</b></td><td>${x.pending||0}</td><td>${x.callback||0}</td><td>${x.done||0}</td></tr>`}).join('')+'</table>';}
-async function loadAnswers(){const a=await api('/api/dir/answers');
- $('answers').innerHTML='<table>'+a.map(x=>`<tr><td>${x.ts}</td><td>${esc(x.first)} ${esc(x.last)}</td><td>${x.stage}</td><td>${esc(x.prompt)}</td><td><b>${esc(x.answer)}</b></td></tr>`).join('')+'</table>'||'none yet';}
-let SCR=null;
-async function loadScripts(){SCR=await api('/api/dir/scripts');
- $('scripts').innerHTML=SCR.scripts.map(sc=>`<div class="row"><span class="lbl">${sc.stage}</span></div>
-  <input data-st="${sc.stage}" data-f="title" value="${esc(sc.title)}" style="width:220px">
-  <textarea data-st="${sc.stage}" data-f="body" style="width:100%;height:90px;font:12.5px monospace">${esc(sc.body)}</textarea>`).join('')+
- '<h3 style="margin-top:10px">Guide prompts</h3>'+SCR.questions.map(q=>`<div class="row"><span class="muted" style="width:60px">${q.stage}</span>
-  <input data-qid="${q.id}" data-f="prompt" value="${esc(q.prompt)}" style="flex:1">
-  <select data-qid="${q.id}" data-f="qtype">${['text','yesno','choice','hcp_date'].map(t=>`<option ${t===q.qtype?'selected':''}>${t}</option>`).join('')}</select>
-  <input data-qid="${q.id}" data-f="options" value="${esc(q.options||'')}" placeholder="choice options a|b|c" style="width:170px"></div>`).join('')+
- '<div class="row"><button class="good" onclick="saveScripts()">Save scripts & prompts</button></div>';}
-async function saveScripts(){
- const scripts=SCR.scripts.map(sc=>({stage:sc.stage,
-  title:document.querySelector(`input[data-st="${sc.stage}"][data-f="title"]`).value,
-  body:document.querySelector(`textarea[data-st="${sc.stage}"][data-f="body"]`).value}));
- const questions=SCR.questions.map(q=>({id:q.id,seq:q.seq,
-  prompt:document.querySelector(`input[data-qid="${q.id}"][data-f="prompt"]`).value,
-  qtype:document.querySelector(`select[data-qid="${q.id}"][data-f="qtype"]`).value,
-  options:document.querySelector(`input[data-qid="${q.id}"][data-f="options"]`).value}));
- await api('/api/dir/scripts',{method:'POST',body:JSON.stringify({scripts,questions})});toast('scripts saved');}
+ if(!f.advocate){toast('Pick or add an advocate first');return;}
+ const r=await api('/api/dir/batch',{method:'POST',body:JSON.stringify(f)});toast('✅ Batch #'+r.batch_id+' → '+f.advocate+' ('+r.assigned+' members)');openTab('batches');loadStats();pv();}
+async function addUser(){await api('/api/dir/user',{method:'POST',body:JSON.stringify({email:$('uemail').value,display:$('udisp').value})});toast('advocate saved');loadUsers();}
+async function loadStats(){const s=await api('/api/dir/stats');
+ $('stats').innerHTML=[['Ready to call',s.eligible-s.in_batch],['In open batches',s.in_batch],['Worked today',s.worked_today],['Connected today',s.connected_today],['Callbacks due now',s.callbacks_due]]
+ .map(x=>`<div class="stat"><div class="n">${(+x[1]).toLocaleString()}</div><div class="l">${x[0]}</div></div>`).join('');}
 async function loadUsers(){const us=await api('/api/dir/users');
- $('users').innerHTML='<table>'+us.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td><td>${esc(x.display)}</td><td>${x.active?'active':'disabled'}</td></tr>`).join('')+'</table>';
- $('badv').innerHTML=us.filter(x=>x.role==='advocate'&&x.active).map(x=>`<option value="${x.email}">${esc(x.display)}</option>`).join('')||'<option value="">— add an advocate below —</option>';}
-async function loadAudit(){const a=await api('/api/dir/audit');
- $('audit').innerHTML='<table>'+a.map(x=>`<tr><td>${x.ts}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.member_id||'')}</td><td>${esc(x.meta)}</td></tr>`).join('')+'</table>';}
-loadUsers();loadBatches();
-</script></body></html>'''
+ $('badv').innerHTML=us.filter(x=>x.role==='advocate'&&x.active).map(x=>`<option value="${x.email}">${esc(x.display)}</option>`).join('')||'<option value="">— no advocates yet: add one below —</option>';
+ return us;}
+const TABS=[['batches','Batches'],['funnel','Funnel'],['answers','Answers'],['flags','Integrity'],['team','Team'],['audit','Audit']];
+$('tabs').innerHTML=TABS.map((t,i)=>`<div class="tab ${i==0?'on':''}" data-t="${t[0]}">${t[1]}</div>`).join('');
+$('tabs').addEventListener('click',e=>{const t=e.target.closest('[data-t]');if(t)openTab(t.dataset.t);});
+async function openTab(k){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.t===k));const B=$('tabbody');B.innerHTML='<span class="muted">loading…</span>';
+ if(k==='batches'){const bs=await api('/api/dir/batches');
+  B.innerHTML=bs.length?'<table><tr><th>#</th><th>Name</th><th>Advocate</th><th>Done</th><th>Callbacks</th><th>Status</th><th></th></tr>'+bs.map(b=>`<tr><td>${b.id}</td><td>${esc(b.name)}</td><td>${esc(b.advocate)}</td><td>${b.done||0}/${b.total}</td><td>${b.callbacks||0}</td><td>${b.status}</td><td><button class="sec" onclick="batchDetail(${b.id})">detail</button> ${b.status==='open'?`<button class="bad" onclick="closeB(${b.id})">close</button>`:''}</td></tr>`).join('')+'</table><div id="bdetail"></div>':'<span class="muted">No batches yet — build one above. It lands here with live progress.</span>';}
+ else if(k==='funnel'){const f=await api('/api/dir/funnel');const st={};f.forEach(r=>{st[r.stage]=st[r.stage]||{};st[r.stage][r.state]=r.n});
+  const stages=['initial','pre_hcp','post_hcp','complete','missed_post','no_appt','dq'];
+  B.innerHTML='<table><tr><th>Stage</th><th>Pending</th><th>Callback set</th><th>Done</th></tr>'+stages.map(sg=>{const x=st[sg]||{};return `<tr><td><b>${sg.replace('_',' ')}</b></td><td>${x.pending||0}</td><td>${x.callback||0}</td><td>${x.done||0}</td></tr>`}).join('')+'</table>';}
+ else if(k==='answers'){const a=await api('/api/dir/answers');
+  B.innerHTML=a.length?'<div style="max-height:340px;overflow-y:auto"><table>'+a.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.stage}</td><td>${esc(x.prompt.slice(0,60))}</td><td><b>${esc(x.answer)}</b></td></tr>`).join('')+'</table></div>':'<span class="muted">Discussion-guide answers appear here the moment an advocate saves a connected call.</span>';}
+ else if(k==='flags'){const f=await api('/api/dir/flags');
+  const sec=(t,rows,cols)=>rows.length?`<h4>${t} (${rows.length})</h4><table><tr>${cols.map(c=>'<th>'+c+'</th>').join('')}</tr>`+rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(r[c])+'</td>').join('')+'</tr>').join('')+'</table>':'';
+  B.innerHTML=(sec('Dispositions faster than 20s',f.fast_dispositions,['ts','actor','member_id','disposition','handle_secs'])+
+  sec('“Connected” under 60s after dialing',f.connected_too_fast,['ts','actor','member_id','disposition','secs_after_click'])+
+  sec('Disposition without any call/text click',f.disposition_without_any_click,['ts','actor','member_id','disposition']))||'<span class="muted">No integrity flags — clean so far 🎉</span>';}
+ else if(k==='team'){const us=await loadUsers();
+  B.innerHTML='<table>'+us.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td><td>${esc(x.display)}</td><td>${x.active?'active':'disabled'}</td></tr>`).join('')+'</table><p class="muted">Add advocates in step 2. They also need IAP access on the Cloud Run service.</p>';}
+ else if(k==='audit'){const a=await api('/api/dir/audit');
+  B.innerHTML='<div style="max-height:340px;overflow-y:auto"><table>'+a.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.member_id||'')}</td><td class="muted">${esc((x.meta||'').slice(0,80))}</td></tr>`).join('')+'</table></div>';}}
+async function batchDetail(id){const d=await api('/api/dir/batch/'+id);
+ $('bdetail').innerHTML='<h4 style="margin-top:12px">Batch '+id+'</h4><div>'+d.summary.map(s=>`<span class="qtag">${esc(s.disposition)}: ${s.n}</span>`).join(' ')+'</div>'+
+ '<table><tr><th>When</th><th>Who</th><th>Member</th><th>Disposition</th><th>Note</th><th>s</th></tr>'+
+ d.dispositions.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td>${esc(x.actor)}</td><td>${esc(x.first)} ${esc(x.last)}</td><td>${esc(x.disposition)}</td><td>${esc((x.note||'').slice(0,60))}</td><td>${x.handle_secs?Math.round(x.handle_secs):''}</td></tr>`).join('')+'</table>';}
+async function closeB(id){if(!confirm('Close this batch?'))return;await api('/api/dir/close_batch/'+id,{method:'POST'});openTab('batches');loadStats();}
+api('/api/dir/qual_counts',{method:'POST',body:'{}'}).then(cs=>{for(const q in cs){const el=document.querySelector(`[data-qc="${q}"]`);if(el)el.textContent=cs[q].toLocaleString();}});
+drawSegs();loadStats();loadUsers();openTab('batches');
+document.querySelector('[data-p="fresh"]').click();
+</script></body></html>"""
+DIRECTOR_HTML = DIRECTOR_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)
 
 ADVOCATE_HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CRM — My Queue</title><style>'''+CSS+'''</style></head><body>

@@ -85,6 +85,25 @@ def filter_sql(f):
              "WHERE b.status='open' AND bm.state IN('pending','served','callback'))")
     return ' AND '.join(w), p
 
+@app.post('/api/dir/preview_rows')
+async def preview_rows(req: Request):
+    u = who(req); need(u,'director')
+    f = await req.json(); w,p = filter_sql(f)
+    rows = db().execute(f"SELECT first,last,age,state,quals,last_conn,att FROM member_core WHERE {w} ORDER BY att ASC, last_conn DESC LIMIT 10", p).fetchall()
+    n = db().execute(f"SELECT COUNT(*) c FROM member_core WHERE {w}", p).fetchone()['c']
+    return {'count': n, 'rows':[dict(r) for r in rows]}
+
+@app.get('/api/dir/stats')
+def dir_stats(req: Request):
+    u = who(req); need(u,'director'); c=db()
+    eligible = c.execute("SELECT COUNT(*) n FROM member_core WHERE status='Active' AND phone<>'' AND refused=0").fetchone()['n']
+    inbatch = c.execute("SELECT COUNT(*) n FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state IN('pending','served','callback')").fetchone()['n']
+    today = now()[:10]
+    worked = c.execute("SELECT COUNT(*) n FROM dispositions WHERE ts LIKE ?", (today+'%',)).fetchone()['n']
+    connected = c.execute("SELECT COUNT(*) n FROM dispositions WHERE ts LIKE ? AND disposition LIKE 'Connected%'", (today+'%',)).fetchone()['n']
+    cb = c.execute("SELECT COUNT(*) n FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state='callback' AND bm.callback_at<=?", (now(),)).fetchone()['n']
+    return {'eligible':eligible,'in_batch':inbatch,'worked_today':worked,'connected_today':connected,'callbacks_due':cb}
+
 @app.post('/api/dir/qual_counts')
 async def qual_counts(req: Request):
     u = who(req); need(u,'director'); c=db()
