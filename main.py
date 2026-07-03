@@ -89,9 +89,12 @@ def filter_sql(f):
 async def preview_rows(req: Request):
     u = who(req); need(u,'director')
     f = await req.json(); w,p = filter_sql(f)
-    rows = db().execute(f"SELECT first,last,age,state,quals,last_conn,att FROM member_core WHERE {w} ORDER BY att ASC, last_conn DESC LIMIT 10", p).fetchall()
+    rows = db().execute(f"SELECT member_id,first,last,age,state,quals,last_conn,att FROM member_core WHERE {w} ORDER BY att ASC, last_conn DESC LIMIT 10", p).fetchall()
     n = db().execute(f"SELECT COUNT(*) c FROM member_core WHERE {w}", p).fetchone()['c']
-    return {'count': n, 'rows':[dict(r) for r in rows]}
+    out=[dict(r) for r in rows]
+    audit(u['email'],'preview_rows',meta={'filters':f,'count':n,'member_ids':[r['member_id'] for r in out]})
+    for r in out: r.pop('member_id',None)
+    return {'count': n, 'rows': out}
 
 @app.get('/api/dir/stats')
 def dir_stats(req: Request):
@@ -103,6 +106,97 @@ def dir_stats(req: Request):
     connected = c.execute("SELECT COUNT(*) n FROM dispositions WHERE ts LIKE ? AND disposition LIKE 'Connected%'", (today+'%',)).fetchone()['n']
     cb = c.execute("SELECT COUNT(*) n FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state='callback' AND bm.callback_at<=?", (now(),)).fetchone()['n']
     return {'eligible':eligible,'in_batch':inbatch,'worked_today':worked,'connected_today':connected,'callbacks_due':cb}
+
+@app.get('/api/dir/pie')
+def pie(req: Request):
+    u=who(req); need(u,'director'); c=db()
+    base="status='Active' AND phone<>'' AND refused=0"
+    tot=c.execute(f"SELECT COUNT(*) n FROM member_core WHERE {base}").fetchone()['n']
+    OPEN="""SELECT DISTINCT bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
+        WHERE b.status='open' AND bm.state IN('pending','served','callback')"""
+    inopen=c.execute(f"SELECT COUNT(*) n FROM member_core WHERE {base} AND member_id IN ({OPEN})").fetchone()['n']
+    # worked = eligible, not currently plated, with a done batch row; classified by their latest done stage
+    rows=c.execute(f"""SELECT stage, COUNT(*) n FROM (
+        SELECT bm.member_id, (SELECT bm2.stage FROM batch_members bm2 WHERE bm2.member_id=bm.member_id AND bm2.state='done'
+                              ORDER BY bm2.batch_id DESC LIMIT 1) stage
+        FROM member_core mc JOIN batch_members bm ON bm.member_id=mc.member_id
+        WHERE mc.status='Active' AND mc.phone<>'' AND mc.refused=0
+          AND bm.state='done' AND mc.member_id NOT IN ({OPEN})
+        GROUP BY bm.member_id) GROUP BY stage""").fetchall()
+    done={r['stage'] or 'other': r['n'] for r in rows}
+    completed=done.get('complete',0)
+    missed=done.get('missed_post',0)+done.get('no_appt',0)
+    other_done=sum(done.values())-completed-missed
+    worked=completed+missed+other_done
+    available=tot-inopen-worked
+    refused=c.execute("SELECT COUNT(*) n FROM member_core WHERE status='Active' AND refused=1").fetchone()['n']
+    nophone=c.execute("SELECT COUNT(*) n FROM member_core WHERE status='Active' AND phone=''").fetchone()['n']
+    return {'eligible':tot,'available':available,'in_progress':inopen,
+            'completed':completed,'missed':missed,'other_done':other_done,'worked':worked,
+            'refused_dq':refused,'no_phone':nophone}
+
+@app.get('/api/dir/advocates')
+def advocates_rollup(req: Request):
+    u=who(req); need(u,'director'); c=db()
+    out=[]
+    for a in c.execute("SELECT email,display FROM users WHERE role='advocate' AND active=1"):
+        em=a['email']
+        r=c.execute("""SELECT
+            SUM(CASE WHEN bm.state='pending' THEN 1 ELSE 0 END) pending,
+            SUM(CASE WHEN bm.state='served' THEN 1 ELSE 0 END) served,
+            SUM(CASE WHEN bm.state='callback' THEN 1 ELSE 0 END) callbacks,
+            SUM(CASE WHEN bm.state='done' THEN 1 ELSE 0 END) done
+            FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
+            WHERE b.advocate=? AND b.status='open'""",(em,)).fetchone()
+        d=c.execute("""SELECT COUNT(*) n, SUM(CASE WHEN disposition LIKE 'Connected%' THEN 1 ELSE 0 END) conn,
+            MAX(ts) last FROM dispositions WHERE actor=?""",(em,)).fetchone()
+        t=c.execute("SELECT COUNT(*) n FROM dispositions WHERE actor=? AND ts LIKE ?",(em,now()[:10]+'%')).fetchone()
+        due=c.execute("""SELECT COUNT(*) n FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
+            WHERE b.advocate=? AND b.status='open' AND bm.state='callback' AND bm.callback_at<=?""",(em,now())).fetchone()
+        out.append({'email':em,'display':a['display'],'pending':r['pending'] or 0,'served':r['served'] or 0,
+            'callbacks':r['callbacks'] or 0,'done_open':r['done'] or 0,'worked_total':d['n'] or 0,
+            'connected_total':d['conn'] or 0,'today':t['n'] or 0,'due_now':due['n'] or 0,'last_activity':d['last'] or ''})
+    return out
+
+MEM_SORTS={'name':'last,first','age':'age','state':'state','conn':'conn','att':'att','last_conn':'last_conn','att_since':'att_since'}
+@app.post('/api/dir/members')
+async def members_browse(req: Request):
+    u=who(req); need(u,'director')
+    f=await req.json()
+    w,p=filter_sql(f)
+    w=w.replace(" AND member_id NOT IN (SELECT member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state IN('pending','served','callback'))","")
+    avail=f.get('avail') or 'all'
+    OPEN_SUB="member_id IN (SELECT member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state IN('pending','served','callback'))"
+    if avail=='available': w+=f" AND NOT ({OPEN_SUB})"
+    elif avail=='assigned': w+=f" AND ({OPEN_SUB})"
+    elif avail=='worked': w+=" AND member_id IN (SELECT member_id FROM dispositions)"
+    elif avail=='untouched': w+=" AND member_id NOT IN (SELECT member_id FROM batch_members)"
+    q=(f.get('q') or '').strip()
+    if q: w+=" AND (first||' '||last LIKE ? OR member_id LIKE ?)"; p+=[f'%{q}%',f'%{q}%']
+    srt=MEM_SORTS.get(f.get('sort') or 'name','last,first'); dr='DESC' if f.get('dir')=='desc' else 'ASC'
+    page=max(0,int(f.get('page') or 0))
+    c=db()
+    tot=c.execute(f"SELECT COUNT(*) n FROM member_core WHERE {w}",p).fetchone()['n']
+    rows=c.execute(f"""SELECT m.member_id,m.first,m.last,m.age,m.state,m.quals,m.sflags,m.conn,m.att,m.last_conn,m.att_since,
+        (SELECT b.advocate FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE bm.member_id=m.member_id AND b.status='open' AND bm.state IN('pending','served','callback') LIMIT 1) advocate,
+        (SELECT bm.stage FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE bm.member_id=m.member_id ORDER BY b.id DESC LIMIT 1) stage,
+        (SELECT d.disposition||' · '||substr(d.ts,6,11) FROM dispositions d WHERE d.member_id=m.member_id ORDER BY d.id DESC LIMIT 1) last_disp
+        FROM member_core m WHERE {w} ORDER BY {srt} {dr} LIMIT 50 OFFSET ?""",p+[page*50]).fetchall()
+    audit(u['email'],'browse_members',meta={'filters':{k:v for k,v in f.items() if v},'page':page,'returned':len(rows),'total':tot})
+    return {'total':tot,'page':page,'rows':[dict(r) for r in rows]}
+
+@app.get('/api/dir/member/{mid}')
+def member_detail(mid:str, req: Request):
+    u=who(req); need(u,'director'); c=db()
+    m=c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
+    if not m: raise HTTPException(404,'no such member')
+    hist=[dict(h) for h in c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,))]
+    ans=[dict(a) for a in c.execute("SELECT ts,stage,prompt,answer,actor FROM answers WHERE member_id=? ORDER BY id DESC LIMIT 30",(mid,))]
+    bt=[dict(b) for b in c.execute("""SELECT b.id,b.name,b.advocate,b.status,bm.state,bm.stage,bm.callback_at,bm.hcp_date
+        FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE bm.member_id=? ORDER BY b.id DESC""",(mid,))]
+    d=dict(m); d['phone']='···'+ (d.pop('phone')[-4:] if d.get('phone') else '')
+    audit(u['email'],'member_detail',mid)
+    return {'member':d,'hist':hist,'answers':ans,'batches':bt}
 
 @app.post('/api/dir/qual_counts')
 async def qual_counts(req: Request):
@@ -174,7 +268,10 @@ def batch_detail(bid:int, req: Request):
     disp = c.execute("""SELECT d.ts,d.actor,d.disposition,d.note,d.handle_secs,m.first,m.last,d.member_id
       FROM dispositions d JOIN member_core m USING(member_id) WHERE d.batch_id=? ORDER BY d.id DESC""",(bid,)).fetchall()
     summ = c.execute("SELECT disposition, COUNT(*) n FROM dispositions WHERE batch_id=? GROUP BY 1 ORDER BY 2 DESC",(bid,)).fetchall()
-    return {'dispositions':[dict(r) for r in disp], 'summary':[dict(r) for r in summ]}
+    left = c.execute("""SELECT m.first,m.last,m.state,bm.state bstate,bm.stage,bm.callback_at FROM batch_members bm
+        JOIN member_core m USING(member_id) WHERE bm.batch_id=? AND bm.state IN('pending','served','callback')
+        ORDER BY bm.state,bm.seq""",(bid,)).fetchall()
+    return {'dispositions':[dict(r) for r in disp], 'summary':[dict(r) for r in summ], 'left':[dict(r) for r in left]}
 
 @app.post('/api/dir/close_batch/{bid}')
 def close_batch(bid:int, req: Request):
@@ -187,7 +284,10 @@ async def add_user(req: Request):
     u = who(req); need(u,'director')
     f = await req.json(); em=(f.get('email') or '').lower().strip()
     if not re.match(r'^[^@]+@[^@]+$', em): raise HTTPException(400,'bad email')
-    c=db(); c.execute("INSERT OR REPLACE INTO users(email,role,display,active) VALUES(?,?,?,?)",
+    c=db()
+    ex=c.execute("SELECT role FROM users WHERE email=?",(em,)).fetchone()
+    if ex and ex['role']=='director': raise HTTPException(400,'that email is the director — cannot convert to advocate')
+    c.execute("INSERT OR REPLACE INTO users(email,role,display,active) VALUES(?,?,?,?)",
         (em, 'advocate', f.get('display') or em.split('@')[0], 1 if f.get('active',True) else 0)); c.commit()
     audit(u['email'],'user_upsert',meta={'email':em}); return {'ok':True}
 
@@ -280,7 +380,7 @@ def nxt(req: Request):
     left = c.execute("SELECT COUNT(*) n FROM batch_members WHERE batch_id=? AND state='pending'",(bid,)).fetchone()['n']
     audit(email,'serve',mid,bid)
     d = dict(m)
-    num = d.pop('phone')                      # full number never sent as a plain field
+    num = d.pop('phone')                      # masked in UI; full number travels only inside the GV deep links
     call = 'https://voice.google.com/u/0/calls?a=nc,' + urllib.parse.quote(num)
     text = 'https://voice.google.com/u/0/messages?itemId=t.' + urllib.parse.quote(num)
     body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
@@ -329,7 +429,9 @@ async def guide_submit(req: Request):
         c.execute("INSERT INTO answers(ts,actor,member_id,batch_id,stage,question_id,prompt,answer) VALUES(?,?,?,?,?,?,?,?)",
             (now(),u['email'],mid,bid,stage,it['id'],it['text'][:200],val))
         lines.append(f"{it['text'][:60]} -> {val}")
-        if it['sched']=='hcp' and re.match(r'^\d{4}-\d{2}-\d{2}',val): hcp=val[:10]
+        if it['sched']=='hcp':
+            try: hcp=datetime.date.fromisoformat(val[:10]).isoformat()
+            except ValueError: pass  # invalid calendar date -> ignore, advocate can re-ask
         if it['dq_vals'] and it['dq_vals'] in val: dq=True
         if stage=='post_hcp' and it['seq']==5 and val=='Yes': call_doctor_yes=True
     served=f.get('served_at') or now()
@@ -396,6 +498,13 @@ async def disposition(req: Request):
     try: handle = (datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle = None
     cb = f.get('callback_at') if d=='Connected — Callback Scheduled' else None
+    if d=='Connected — Callback Scheduled':
+        try:
+            cbdt=datetime.datetime.fromisoformat(str(cb))
+            if not (datetime.datetime.now() <= cbdt <= datetime.datetime.now()+datetime.timedelta(days=180)): raise ValueError
+            cb=cbdt.isoformat(timespec='minutes')
+        except (ValueError,TypeError):
+            raise HTTPException(400,'Callback Scheduled requires a valid date/time within the next 180 days')
     c.execute("""INSERT INTO dispositions(ts,actor,member_id,batch_id,disposition,note,served_at,call_click_at,text_click_at,handle_secs)
         VALUES(?,?,?,?,?,?,?,?,?,?)""",(now(),u['email'],mid,bid,d,(f.get('note') or '')[:400],served,
         f.get('call_click_at'),f.get('text_click_at'),handle))
