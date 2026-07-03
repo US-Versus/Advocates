@@ -48,21 +48,47 @@ QUAL_CHIPS = ['Apokyn','Onapgo Qualified','Onapgo','Inbrija','Gocovri','Dyskines
 
 def filter_sql(f):
     w = ["status='Active'", "phone<>''", "refused=0"]; p = []
-    if f.get('quals'):
-        qs = [q for q in f['quals'] if q in QUAL_CHIPS]
-        if qs:
-            w.append('(' + ' OR '.join("';'||quals||';' LIKE ?" for _ in qs) + ')')
-            p += [f'%;{q};%' for q in qs]
+    today = datetime.date.today()
+    def ago(months): return (today - datetime.timedelta(days=30*months)).isoformat()
+    # qualification chips: tri-state (include OR'd / exclude AND-not)
+    inc=[q for q in (f.get('qual_inc') or f.get('quals') or []) if q in QUAL_CHIPS]
+    exc=[q for q in (f.get('qual_exc') or []) if q in QUAL_CHIPS]
+    if inc:
+        w.append('('+' OR '.join("';'||quals||';' LIKE ?" for _ in inc)+')'); p+=[f'%;{q};%' for q in inc]
+    for q in exc:
+        w.append("';'||quals||';' NOT LIKE ?"); p.append(f'%;{q};%')
     if f.get('exclude_flags'): w.append("sflags=''")
+    # last connection bucket
+    lc=f.get('lc') or 'any'
+    if lc=='never': w.append('conn=0')
+    elif lc=='6m': w.append('last_conn>=?'); p.append(ago(6))
+    elif lc=='1y': w.append('last_conn>=? AND last_conn<?'); p+=[ago(12),ago(6)]
+    elif lc=='2y': w.append('last_conn>=? AND last_conn<?'); p+=[ago(24),ago(12)]
+    elif lc=='old': w.append("last_conn<>'' AND last_conn<?"); p.append(ago(24))
+    # attempts-since buckets (multi, OR)
+    AS_SQL={'0':'att_since=0','12':'att_since BETWEEN 1 AND 2','35':'att_since BETWEEN 3 AND 5','6p':'att_since>=6'}
+    asb=[AS_SQL[k] for k in (f.get('att_since') or []) if k in AS_SQL]
+    if asb: w.append('('+' OR '.join(asb)+')')
+    # total connections bucket
+    tc=f.get('tc') or 'any'
+    if tc=='0': w.append('conn=0')
+    elif tc=='1': w.append('conn=1')
+    elif tc=='2p': w.append('conn>=2')
+    # age buckets (multi, OR; 'unk' = no age)
+    AGE_SQL={'<50':'age<50','50':'age BETWEEN 50 AND 59','60':'age BETWEEN 60 AND 69','70':'age BETWEEN 70 AND 79','80':'age>=80','unk':'age IS NULL'}
+    ab=[AGE_SQL[k] for k in (f.get('ages') or []) if k in AGE_SQL]
+    if ab: w.append('('+' OR '.join(ab)+')')
     if f.get('never_attempted'): w.append('conn=0 AND att=0')
     if f.get('att_max') not in (None,''): w.append('att<=?'); p.append(int(f['att_max']))
-    if f.get('age_min') not in (None,''): w.append('age>=?'); p.append(int(f['age_min']))
-    if f.get('age_max') not in (None,''): w.append('age<=?'); p.append(int(f['age_max']))
     if f.get('state'): w.append('state=?'); p.append(f['state'].upper())
-    if f.get('last_conn_before'): w.append("(last_conn='' OR last_conn<?)"); p.append(f['last_conn_before'])
     w.append('member_id NOT IN (SELECT member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id '
              "WHERE b.status='open' AND bm.state IN('pending','served','callback'))")
     return ' AND '.join(w), p
+
+@app.post('/api/dir/qual_counts')
+async def qual_counts(req: Request):
+    u = who(req); need(u,'director'); c=db()
+    return {q: c.execute("SELECT COUNT(*) n FROM member_core WHERE status='Active' AND phone<>'' AND refused=0 AND ';'||quals||';' LIKE ?",(f'%;{q};%',)).fetchone()['n'] for q in QUAL_CHIPS}
 
 @app.post('/api/dir/preview')
 async def preview(req: Request):

@@ -24,6 +24,13 @@ table{border-collapse:collapse;width:100%;font-size:12.5px}td,th{border-bottom:1
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin-top:10px}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#101828;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;opacity:0;transition:.3s;pointer-events:none}
 .toast.on{opacity:1}
+.seg{display:inline-flex;border:1.5px solid #cbd5e1;border-radius:9px;overflow:hidden;background:#fff}
+.seg button{border:none;background:#fff;padding:6px 12px;font-size:12.5px;cursor:pointer;border-right:1px solid #e2e8f0;color:#334155}
+.seg button:last-child{border-right:none}.seg button:hover{background:#f1f5f9}.seg button.on{background:#2563eb;color:#fff}
+.chip.inc{border-color:#16a34a!important;background:#e8f7ee!important;color:#0a5c2e!important}
+.chip.exc{border-color:#dc2626!important;background:#fdeceb!important;color:#b3261e!important;text-decoration:line-through}
+.chip .n{color:#94a3b8;font-weight:500;font-size:10px}
+.pcount{font-size:16px;font-weight:800;color:#1d4ed8;background:#eef4ff;border:1px solid #c7d8fb;border-radius:8px;padding:4px 14px}
 '''
 JS_COMMON = '''
 const $=id=>document.getElementById(id);
@@ -38,21 +45,20 @@ DIRECTOR_HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
 <title>CRM — Director</title><style>'''+CSS+'''</style></head><body>
 <header><h1>🎖 Director Console</h1><span class="sp"></span><span class="me">__ME__</span></header>
 <div class="wrap">
-<div class="panel"><h3>1 · Build a batch</h3>
+<div class="panel"><h3>1 · Build a batch <span class="muted" style="font-size:11px">chips: 1× 🟢 include · 2× 🔴 exclude · 3× clear</span></h3>
  <div class="row"><span class="lbl">Qualified for</span><span id="quals"></span></div>
- <div class="row"><span class="lbl">Engagement</span>
-   <label class="chip" id="never" onclick="tg(this)">Never attempted</label>
-   <span class="lbl" style="min-width:auto">att ≤</span><input id="attmax" style="width:60px">
-   <span class="lbl" style="min-width:auto">last conn before</span><input id="lcb" type="date"></div>
- <div class="row"><span class="lbl">Age</span><input id="agemin" placeholder="min" style="width:64px"><input id="agemax" placeholder="max" style="width:64px">
-   <span class="lbl" style="min-width:auto">State</span><input id="state" style="width:64px" placeholder="e.g. FL">
-   <label class="chip" id="noflags" onclick="tg(this)">No screening flags</label></div>
+ <div class="row"><span class="lbl">Last connection</span><span class="seg" id="lcSeg"></span></div>
+ <div class="row"><span class="lbl">Attempts since conn</span><span class="seg" id="asSeg"></span><span class="muted" style="font-size:11px">pick any</span>
+   <span class="lbl" style="min-width:auto">Total conn</span><span class="seg" id="tcSeg"></span></div>
+ <div class="row"><span class="lbl">Age</span><span class="seg" id="ageSeg"></span>
+   <span class="lbl" style="min-width:auto">State</span><input id="state" style="width:64px" placeholder="FL">
+   <label class="chip" id="noflags" onclick="tg(this);pv()">No screening flags</label>
+   <label class="chip" id="never" onclick="tg(this);pv()">Never attempted</label></div>
+ <div class="row"><span class="pcount" id="pcount">—</span><span class="muted">members match &amp; are not in an open batch (live)</span></div>
  <div class="row"><span class="lbl">Batch</span><input id="bname" placeholder="name e.g. Onapgo-FL-July">
-   <input id="bsize" type="number" value="25" style="width:70px" title="size">
-   <select id="badv"></select>
-   <button class="sec" onclick="preview()">Preview count</button><b id="pcount"></b>
+   <input id="bsize" type="number" value="25" style="width:70px" title="size"><select id="badv"></select>
    <button class="good" onclick="createBatch()">Assign batch</button></div>
- <div class="row"><span class="lbl">Script hint</span><input id="bscript" style="flex:1" placeholder="talking points shown on every card of this batch"></div>
+ <div class="row"><span class="lbl">Script hint</span><input id="bscript" style="flex:1" placeholder="extra note shown on every card of this batch (guides load automatically by stage)"></div>
 </div>
 <div class="panel"><h3>2 · Batches & progress</h3><div id="batches"></div><div id="bdetail"></div></div>
 <div class="panel"><h3>3 · Program funnel <span class="muted">Initial → Pre-HCP → Post-HCP (open batches)</span></h3>
@@ -68,15 +74,32 @@ DIRECTOR_HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
 </div><div class="toast" id="toast"></div>
 <script>'''+JS_COMMON+'''
 const QUALS=['Apokyn','Onapgo Qualified','Onapgo','Inbrija','Gocovri','Dyskinesia','N317 trial','IPX203 trial','OFF signals'];
-$('quals').innerHTML=QUALS.map(q=>`<label class="chip" data-q="${q}" onclick="tg(this)">${q}</label>`).join('');
+const LC=[['any','Any'],['never','Never'],['6m','< 6 mo'],['1y','6–12 mo'],['2y','1–2 yr'],['old','2 yr +']];
+const ASB=[['0','0'],['12','1–2'],['35','3–5'],['6p','6 +']];
+const TC=[['any','Any'],['0','0'],['1','1'],['2p','2 +']];
+const AGES=[['<50','< 50'],['50','50s'],['60','60s'],['70','70s'],['80','80 +'],['unk','?']];
+let lcSel='any',tcSel='any',asSel=new Set(),ageSel=new Set(),qInc=new Set(),qExc=new Set();
+function seg(id,buckets,single){$(id).innerHTML=buckets.map(b=>`<button data-b="${b[0]}" class="${(single&&b[0]==='any')?'on':''}">${b[1]}</button>`).join('');
+ $(id).addEventListener('click',e=>{const b=e.target.closest('[data-b]');if(!b)return;const k=b.dataset.b;
+  if(single){if(id==='lcSeg')lcSel=k;else tcSel=k;$(id).querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.b===k));}
+  else{const set=id==='asSeg'?asSel:ageSel;if(set.has(k)){set.delete(k);b.classList.remove('on');}else{set.add(k);b.classList.add('on');}}
+  pv();});}
+seg('lcSeg',LC,true);seg('asSeg',ASB,false);seg('tcSeg',TC,true);seg('ageSeg',AGES,false);
+$('quals').innerHTML=QUALS.map(q=>`<label class="chip" data-q="${q}">${q} <span class="n" data-qc="${q}"></span></label>`).join('');
+$('quals').addEventListener('click',e=>{const ch=e.target.closest('[data-q]');if(!ch)return;const q=ch.dataset.q;
+ if(qInc.has(q)){qInc.delete(q);qExc.add(q);ch.classList.remove('inc');ch.classList.add('exc');}
+ else if(qExc.has(q)){qExc.delete(q);ch.classList.remove('exc');}
+ else{qInc.add(q);ch.classList.add('inc');}pv();});
+api('/api/dir/qual_counts',{method:'POST',body:'{}'}).then(cs=>{for(const q in cs){const el=document.querySelector(`[data-qc="${q}"]`);if(el)el.textContent=cs[q].toLocaleString();}});
 function tg(el){el.classList.toggle('on')}
-function filters(){return{quals:[...document.querySelectorAll('#quals .chip.on')].map(c=>c.dataset.q),
+function filters(){return{qual_inc:[...qInc],qual_exc:[...qExc],lc:lcSel,tc:tcSel,att_since:[...asSel],ages:[...ageSel],
  never_attempted:$('never').classList.contains('on'),exclude_flags:$('noflags').classList.contains('on'),
- att_max:$('attmax').value,age_min:$('agemin').value,age_max:$('agemax').value,state:$('state').value,
- last_conn_before:$('lcb').value};}
-async function preview(){const r=await api('/api/dir/preview',{method:'POST',body:JSON.stringify(filters())});$('pcount').textContent=r.count.toLocaleString()+' match';}
+ state:$('state').value};}
+let pvT=null;
+function pv(){clearTimeout(pvT);pvT=setTimeout(async()=>{const r=await api('/api/dir/preview',{method:'POST',body:JSON.stringify(filters())});$('pcount').textContent=r.count.toLocaleString();},250);}
+$('state').addEventListener('input',pv);pv();
 async function createBatch(){const f=filters();f.name=$('bname').value;f.size=$('bsize').value;f.advocate=$('badv').value;f.script=$('bscript').value;
- const r=await api('/api/dir/batch',{method:'POST',body:JSON.stringify(f)});toast('Batch #'+r.batch_id+' assigned ('+r.assigned+' members)');loadBatches();}
+ const r=await api('/api/dir/batch',{method:'POST',body:JSON.stringify(f)});toast('Batch #'+r.batch_id+' assigned ('+r.assigned+' members)');loadBatches();pv();}
 async function loadBatches(){const bs=await api('/api/dir/batches');
  $('batches').innerHTML='<table><tr><th>#</th><th>Name</th><th>Advocate</th><th>Progress</th><th>Callbacks</th><th>Status</th><th></th></tr>'+
  bs.map(b=>`<tr><td>${b.id}</td><td>${esc(b.name)}</td><td>${esc(b.advocate)}</td><td>${b.done||0}/${b.total}</td><td>${b.callbacks||0}</td><td>${b.status}</td>
