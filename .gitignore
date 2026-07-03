@@ -1,0 +1,17 @@
+# ── MEMBER DATA MUST NEVER ENTER GIT ─────────────────────────
+*.db
+*.db-journal
+*.sqlite*
+app.db*
+CRM_Master*
+*.csv
+*.tsv
+*.xlsx
+*.docx
+*.pptx
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.env
+.venv/
+.DS_Store

@@ -1,0 +1,30 @@
+name: Deploy to Cloud Run
+on:
+  push:
+    branches: [main]
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  SERVICE: advocacy-crm
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # Workload Identity Federation — no stored keys
+    steps:
+      - uses: actions/checkout@v4
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build & deploy
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --source . \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --no-allow-unauthenticated \
+            --set-env-vars APP_DB=/data/app.db
+      # Data volume (GCS) is attached once at setup; deploys never touch member data.
