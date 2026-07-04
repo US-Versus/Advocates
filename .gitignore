@@ -15,3 +15,6 @@ __pycache__/
 .env
 .venv/
 .DS_Store
+
+# 7.8MB dashboard lives on the GCS data volume (/data/dashboard.html), not the image — upload to the bucket, never commit
+dashboard.html

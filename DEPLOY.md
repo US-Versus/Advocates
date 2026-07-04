@@ -49,7 +49,7 @@ Open the app → you land on the Director console (your email was seeded as dire
 | | Director (you) | Advocate |
 |---|---|---|
 | See member emails | ✗ (not in app.db at all) | ✗ |
-| Browse/search all members | filter counts + audited 10-row preview (logged with filters & member IDs) | ✗ — one served card at a time |
+| Browse/search all members | full audited browser + population pie + preview (all director reads logged) | ✗ — only their assigned pool, 15 rows/page |
 | See phone numbers | ✗ (masked to last 4) | last-4 only; full number only inside the GV link |
 | Export | tiers/DNC CSVs | ✗ nothing |
 | Call/text | — | assigned card only; buttons exist only on the served card |

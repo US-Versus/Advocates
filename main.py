@@ -38,7 +38,8 @@ def audit(actor, action, member_id=None, batch_id=None, meta=None):
 def root(req: Request):
     u = who(req)
     q = '?as='+u['email'] if DEV else ''
-    return RedirectResponse('/director'+q if u['role']=='director' else '/advocate'+q)
+    # Director home = the full CRM Review Dashboard (real filters). Console (/director) is a secondary tool.
+    return RedirectResponse('/dashboard'+q if u['role']=='director' else '/advocate'+q)
 
 @app.get('/healthz')
 def health(): return {'ok': True}
@@ -231,6 +232,58 @@ async def make_batch(req: Request):
     audit(u['email'],'batch_create',batch_id=bid,meta={'n':len(rows),'advocate':adv,'filters':f})
     return {'batch_id': bid, 'assigned': len(rows)}
 
+@app.post('/api/dir/push_assignments')
+async def push_assignments(req: Request):
+    """Dashboard 'push': create a batch per tagged advocate and log the assignment date on each member."""
+    u=who(req); need(u,'director'); f=await req.json(); c=db()
+    assignments=f.get('assignments') or {}     # {member_id: advocate_name}
+    groups={}
+    for mid,name in assignments.items():
+        if name and mid: groups.setdefault(str(name).strip(),[]).append(mid)
+    if not groups: raise HTTPException(400,'no assignments to push')
+    users=[dict(r) for r in c.execute("SELECT email,display FROM users WHERE role='advocate' AND active=1")]
+    def resolve(name):
+        n=name.strip().lower()
+        for r in users:
+            if r['email'].lower()==n: return r['email']
+        for r in users:
+            if (r['display'] or '').lower()==n: return r['email']
+        for r in users:
+            if r['email'].split('@')[0].lower()==n: return r['email']
+        return None
+    OPEN="member_id IN (SELECT member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.status='open' AND bm.state IN('pending','served','callback'))"
+    today=now()[:10]; out=[]
+    for name,mids in groups.items():
+        email=resolve(name)
+        if not email:
+            out.append({'advocate':name,'resolved':None,'assigned':0,'skipped':len(mids),'note':'advocate not enrolled — add in Team panel (email or matching display name)'}); continue
+        elig=[r['member_id'] for r in c.execute(f"SELECT member_id FROM member_core WHERE status='Active' AND phone<>'' AND refused=0 AND member_id IN ({','.join('?'*len(mids))}) AND NOT ({OPEN})", mids)]
+        if not elig:
+            out.append({'advocate':name,'resolved':email,'assigned':0,'skipped':len(mids),'note':'all ineligible or already in an open batch'}); continue
+        bid=c.execute("INSERT INTO batches(name,advocate,created_by,created_at,script_hint) VALUES(?,?,?,?,?)",
+            (f'Dashboard push {today} — {name}',email,u['email'],now(),'')).lastrowid
+        c.executemany("INSERT INTO batch_members(batch_id,member_id,seq) VALUES(?,?,?)",[(bid,mm,i) for i,mm in enumerate(elig)])
+        c.executemany("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+            [(mm,today,'Assigned to advocate',f'Assigned to {name} ({email}) by {u["display"]} — dashboard push','O') for mm in elig])
+        out.append({'advocate':name,'resolved':email,'batch_id':bid,'assigned':len(elig),'skipped':len(mids)-len(elig)})
+    c.commit(); audit(u['email'],'push_assignments',meta={'groups':len(groups),'result':out})
+    return {'results':out}
+
+@app.post('/api/dir/unassign_members')
+async def unassign_members(req: Request):
+    """Remove members from their open batch(es) after a push, and log the removal on each member."""
+    u=who(req); need(u,'director'); f=await req.json(); c=db()
+    mids=[m for m in (f.get('member_ids') or []) if m]
+    if not mids: raise HTTPException(400,'no members to unassign')
+    rows=[dict(r) for r in c.execute(f"""SELECT bm.batch_id,bm.member_id,b.advocate FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
+        WHERE b.status='open' AND bm.state IN('pending','callback') AND bm.member_id IN ({','.join('?'*len(mids))})""",mids)]
+    for r in rows:
+        c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=?",(r['batch_id'],r['member_id']))
+        c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+            (r['member_id'],now()[:10],'Unassigned from advocate',f'Removed from {r["advocate"]} by {u["display"]}','O'))
+    c.commit(); audit(u['email'],'unassign_members',meta={'removed':len(rows),'requested':len(mids)})
+    return {'removed':len(rows),'requested':len(mids)}
+
 @app.post('/api/dir/import_batch')
 async def import_batch(req: Request):
     """Load a batch CSV exported from the review dashboard: {name, advocate, member_ids:[...]}"""
@@ -350,13 +403,81 @@ def current_card(c, email):
     return c.execute("""SELECT bm.batch_id,bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
         WHERE b.advocate=? AND b.status='open' AND bm.state='served' LIMIT 1""",(email,)).fetchone()
 
-@app.get('/api/adv/next')
-def nxt(req: Request):
-    u = who(req); need(u,'advocate'); email=u['email']; c=db()
+def adv_scope(c, email, mid):
+    """Member is actionable by this advocate: in one of their OPEN batches, not finished."""
+    return c.execute("""SELECT bm.batch_id,bm.member_id,bm.state,bm.stage FROM batch_members bm
+        JOIN batches b ON b.id=bm.batch_id
+        WHERE b.advocate=? AND b.status='open' AND bm.member_id=? AND bm.state IN('pending','served','callback')
+        ORDER BY bm.batch_id DESC LIMIT 1""",(email,mid)).fetchone()
+
+def build_card(c, u, bid, mid):
+    m = c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
+    hist = c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,)).fetchall()
+    b = c.execute("SELECT name,script_hint FROM batches WHERE id=?",(bid,)).fetchone()
+    bm = c.execute("SELECT stage,hcp_date,stage_attempts FROM batch_members WHERE batch_id=? AND member_id=?",(bid,mid)).fetchone()
+    stage = bm['stage'] or 'initial'
+    sc = c.execute("SELECT title,body FROM scripts WHERE stage=?",(stage,)).fetchone()
+    qs = [dict(q) for q in c.execute("SELECT id,seq,kind,text,qtype,options,show_qid,show_vals,dq_vals,sched FROM guide_items WHERE stage=? ORDER BY seq",(stage,))]
+    left = c.execute("SELECT COUNT(*) n FROM batch_members WHERE batch_id=? AND state='pending'",(bid,)).fetchone()['n']
+    d = dict(m)
+    num = d.pop('phone')                      # masked in UI; full number travels only inside the GV deep links
+    call = 'https://voice.google.com/u/0/calls?a=nc,' + urllib.parse.quote(num)
+    text = 'https://voice.google.com/u/0/messages?itemId=t.' + urllib.parse.quote(num)
+    body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
+    sms=SMS_TEMPLATES.get(stage,SMS_TEMPLATES['initial']).replace('{first}',m['first']).replace('{advocate}',u['display'])
+    d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left, sms_text=sms,
+             call_url=call, text_url=text, served_at=now(),
+             stage=stage, hcp_date=bm['hcp_date'], stage_attempt=(bm['stage_attempts'] or 0)+1, max_attempts=MAX_STAGE_ATTEMPTS,
+             stage_title=(sc['title'] if sc else stage), stage_script=body, guide=qs,
+             hist=[dict(h) for h in hist])
+    return d
+
+STAGE_ORD={'pre_hcp':0,'post_hcp':1,'initial':2}
+@app.get('/api/adv/list')
+def adv_list(req: Request, view: str='queue', page: int=0):
+    u=who(req); need(u,'advocate'); email=u['email']; c=db()
+    page=max(0,int(page)); PER=15
     c.execute("""UPDATE batch_members SET stage='post_hcp', stage_attempts=0,
         callback_at=date(hcp_date,'+'||? ||' days')||'T09:00'
         WHERE stage='pre_hcp' AND hcp_date IS NOT NULL AND hcp_date<date('now','localtime')
         AND state IN('callback','pending')""",(POST_DELAY_DAYS,)); c.commit()
+    if view=='done':
+        rows=c.execute("""SELECT d.member_id, m.first,m.last,m.age,m.state st,m.quals, d.disposition, d.ts
+            FROM dispositions d JOIN member_core m USING(member_id)
+            WHERE d.actor=? AND d.ts LIKE ? ORDER BY d.id DESC LIMIT ? OFFSET ?""",(email,now()[:10]+'%',PER,page*PER)).fetchall()
+        tot=c.execute("SELECT COUNT(*) n FROM dispositions WHERE actor=? AND ts LIKE ?",(email,now()[:10]+'%')).fetchone()['n']
+        out=[dict(r) for r in rows]
+    else:
+        w={"due":"bm.state='callback' AND replace(bm.callback_at,'T',' ')<=datetime('now','localtime')",
+           "callbacks":"bm.state='callback' AND replace(bm.callback_at,'T',' ')>datetime('now','localtime')",
+           "queue":"bm.state IN('pending','served')"}.get(view)
+        if not w: raise HTTPException(400,'bad view')
+        base=f"""FROM batch_members bm JOIN batches b ON b.id=bm.batch_id JOIN member_core m ON m.member_id=bm.member_id
+            WHERE b.advocate=? AND b.status='open' AND {w}"""
+        tot=c.execute(f"SELECT COUNT(*) n {base}",(email,)).fetchone()['n']
+        rows=c.execute(f"""SELECT bm.member_id, m.first,m.last,m.age,m.state st,m.quals,m.conn,m.att,
+            bm.stage,bm.state bstate,bm.stage_attempts,bm.callback_at,bm.hcp_date,b.name batch,
+            (SELECT d.disposition||' · '||substr(d.ts,6,11) FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) last_disp
+            {base} ORDER BY CASE WHEN bm.callback_at IS NOT NULL THEN bm.callback_at ELSE '9' END,
+            CASE bm.stage WHEN 'pre_hcp' THEN 0 WHEN 'post_hcp' THEN 1 ELSE 2 END, bm.seq LIMIT ? OFFSET ?""",
+            (email,PER,page*PER)).fetchall()
+        out=[dict(r) for r in rows]
+    audit(email,'adv_list',meta={'view':view,'page':page,'ids':[r['member_id'] for r in out]})
+    return {'total':tot,'page':page,'per':PER,'rows':out}
+
+@app.get('/api/adv/open/{mid}')
+def adv_open(mid: str, req: Request):
+    u=who(req); need(u,'advocate'); c=db()
+    sc=adv_scope(c,u['email'],mid)
+    if not sc: raise HTTPException(403,'not in your assigned pool')
+    if sc['state']=='pending':
+        c.execute("UPDATE batch_members SET state='served' WHERE batch_id=? AND member_id=?",(sc['batch_id'],mid)); c.commit()
+    audit(u['email'],'open',mid,sc['batch_id'])
+    return build_card(c,u,sc['batch_id'],mid)
+
+@app.get('/api/adv/next')
+def nxt(req: Request):
+    u = who(req); need(u,'advocate'); email=u['email']; c=db()
     cur = current_card(c, email)
     if not cur:
         cur = c.execute("""SELECT bm.batch_id,bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
@@ -370,39 +491,40 @@ def nxt(req: Request):
         return {'empty': True}
     bid, mid = cur['batch_id'], cur['member_id']
     c.execute("UPDATE batch_members SET state='served' WHERE batch_id=? AND member_id=?",(bid,mid)); c.commit()
-    m = c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
-    hist = c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,)).fetchall()
-    b = c.execute("SELECT name,script_hint FROM batches WHERE id=?",(bid,)).fetchone()
-    bm = c.execute("SELECT stage,hcp_date,stage_attempts FROM batch_members WHERE batch_id=? AND member_id=?",(bid,mid)).fetchone()
-    stage = bm['stage'] or 'initial'
-    sc = c.execute("SELECT title,body FROM scripts WHERE stage=?",(stage,)).fetchone()
-    qs = [dict(q) for q in c.execute("SELECT id,seq,kind,text,qtype,options,show_qid,show_vals,dq_vals,sched FROM guide_items WHERE stage=? ORDER BY seq",(stage,))]
-    left = c.execute("SELECT COUNT(*) n FROM batch_members WHERE batch_id=? AND state='pending'",(bid,)).fetchone()['n']
     audit(email,'serve',mid,bid)
-    d = dict(m)
-    num = d.pop('phone')                      # masked in UI; full number travels only inside the GV deep links
-    call = 'https://voice.google.com/u/0/calls?a=nc,' + urllib.parse.quote(num)
-    text = 'https://voice.google.com/u/0/messages?itemId=t.' + urllib.parse.quote(num)
-    body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
-    d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left,
-             call_url=call, text_url=text, served_at=now(),
-             stage=stage, hcp_date=bm['hcp_date'], stage_attempt=(bm['stage_attempts'] or 0)+1, max_attempts=MAX_STAGE_ATTEMPTS,
-             stage_title=(sc['title'] if sc else stage),
-             stage_script=body, guide=qs,
-             hist=[dict(h) for h in hist])
-    return d
+    return build_card(c,u,bid,mid)
+
+@app.get('/api/adv/guide/{mid}')
+def adv_guide(mid: str, req: Request, stage: str='initial'):
+    u=who(req); need(u,'advocate'); c=db()
+    sc=adv_scope(c,u['email'],mid)
+    if not sc: raise HTTPException(403,'not in your assigned pool')
+    if stage not in ('initial','pre_hcp','post_hcp'): raise HTTPException(400,'bad stage')
+    m_=c.execute("SELECT first,doctor FROM member_core WHERE member_id=?",(mid,)).fetchone()
+    bm=c.execute("SELECT hcp_date FROM batch_members WHERE batch_id=? AND member_id=?",(sc['batch_id'],mid)).fetchone()
+    s=c.execute("SELECT title,body FROM scripts WHERE stage=?",(stage,)).fetchone()
+    qs=[dict(q) for q in c.execute("SELECT id,seq,kind,text,qtype,options,show_qid,show_vals,dq_vals,sched FROM guide_items WHERE stage=? ORDER BY seq",(stage,))]
+    body=(s['body'] if s else '').replace('{first}',m_['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
+    audit(u['email'],'guide_view',mid,sc['batch_id'],meta={'stage':stage})
+    return {'stage':stage,'stage_title':(s['title'] if s else stage),'stage_script':body,'guide':qs}
 
 @app.post('/api/adv/click')
 async def click(req: Request):
     u=who(req); need(u,'advocate'); f=await req.json(); c=db()
-    cur = current_card(c, u['email'])
-    if not cur or cur['member_id']!=f.get('member_id'): raise HTTPException(403,'not your current card')
-    audit(u['email'], 'click_'+('call' if f.get('kind')=='call' else 'text'), cur['member_id'], cur['batch_id'])
+    sc = adv_scope(c, u['email'], f.get('member_id') or '')
+    if not sc: raise HTTPException(403,'not in your assigned pool')
+    audit(u['email'], 'click_'+('call' if f.get('kind')=='call' else 'text'), sc['member_id'], sc['batch_id'])
     return {'ok': True, 'ts': now()}
 
 STAGE_NEXT = {'initial':'pre_hcp','pre_hcp':'post_hcp','post_hcp':'complete'}
 PRE_WINDOW_DAYS, POST_DELAY_DAYS = 10, 28   # pre window opens HCP-10d; post opens HCP+4wks
 MAX_STAGE_ATTEMPTS, POST_RETRY_DAYS = 3, 3   # ≤3 serves per window; post retries 3 days apart
+INITIAL_RETRY_DAYS = 3                        # initial no-connect retries 3 days apart, ≤3 attempts then retire
+SMS_TEMPLATES = {  # PLACEHOLDER operational texts (opt-out included) — replace with PRC/MLR-approved copy before use
+ 'initial':"Hi {first}, this is {advocate} with Parkinson's Community. I tried reaching you by phone about the information you requested. When's a good time to talk? Reply STOP to opt out.",
+ 'pre_hcp':"Hi {first}, {advocate} from Parkinson's Community. Following up before your upcoming doctor's appointment — I'd like to help you prepare. When can we talk? Reply STOP to opt out.",
+ 'post_hcp':"Hi {first}, {advocate} from Parkinson's Community, checking in after your appointment. When's a good time for a quick call? Reply STOP to opt out.",
+}
 
 def next_pre_retry(hcp, attempts):
     'space remaining pre-window attempts between today and the appointment'
@@ -415,11 +537,14 @@ def next_pre_retry(hcp, attempts):
 @app.post('/api/adv/guide_submit')
 async def guide_submit(req: Request):
     u=who(req); need(u,'advocate'); f=await req.json(); c=db()
-    cur = current_card(c, u['email'])
-    if not cur or cur['member_id']!=f.get('member_id'): raise HTTPException(403,'not your current card')
-    bid, mid = cur['batch_id'], cur['member_id']
+    sc = adv_scope(c, u['email'], f.get('member_id') or '')
+    if not sc: raise HTTPException(403,'not in your assigned pool')
+    bid, mid = sc['batch_id'], sc['member_id']
     bm=c.execute("SELECT stage,hcp_date FROM batch_members WHERE batch_id=? AND member_id=?",(bid,mid)).fetchone()
     stage=bm['stage'] or 'initial'
+    override=f.get('stage')
+    if override in ('initial','pre_hcp','post_hcp') and override!=stage:
+        stage=override   # advocate corrected the call type (appt happened earlier / hasn't happened yet)
     hcp=None; dq=False; lines=[]; call_doctor_yes=False
     for a in (f.get('answers') or []):
         it=c.execute("SELECT * FROM guide_items WHERE id=? AND stage=? AND kind='q'",(a.get('qid'),stage)).fetchone()
@@ -479,17 +604,20 @@ async def guide_submit(req: Request):
     c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
         (mid,now()[:10],f'{stage.replace("_"," ").title()} Call ({u["display"]})',outcome,'C'))
     c.commit()
-    audit(u['email'],'guide_submit',mid,bid,meta={'stage':stage,'answers':len(lines),'outcome':outcome})
+    audit(u['email'],'guide_submit',mid,bid,meta={'stage':stage,'scheduled_stage':bm['stage'] or 'initial','override':bool(override and override!=(bm['stage'] or 'initial')),'answers':len(lines),'outcome':outcome})
     return {'ok':True,'outcome':outcome}
 
 DISPOSITIONS = ['Connected — Educated','Connected — Callback Scheduled','Connected — Not Interested',
+                'Reached someone else','Health event / hospitalized','Appointment changed',
                 'Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped']
+SITUATION_DAYS = {'Reached someone else':2,'Health event / hospitalized':14}  # member stays in sequence; auto-reschedule
 
 @app.post('/api/adv/disposition')
 async def disposition(req: Request):
     u=who(req); need(u,'advocate'); f=await req.json(); c=db()
-    cur = current_card(c, u['email'])
-    if not cur or cur['member_id']!=f.get('member_id'): raise HTTPException(403,'not your current card')
+    sc = adv_scope(c, u['email'], f.get('member_id') or '')
+    if not sc: raise HTTPException(403,'not in your assigned pool')
+    cur = sc
     d = f.get('disposition')
     if d not in DISPOSITIONS: raise HTTPException(400,'unknown disposition')
     if d=='Skipped' and not (f.get('note') or '').strip(): raise HTTPException(400,'skip requires a reason')
@@ -497,22 +625,39 @@ async def disposition(req: Request):
     served = f.get('served_at') or now()
     try: handle = (datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle = None
-    cb = f.get('callback_at') if d=='Connected — Callback Scheduled' else None
+    cb = f.get('callback_at') if d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized') else None
     if d=='Connected — Callback Scheduled':
         try:
             cbdt=datetime.datetime.fromisoformat(str(cb))
-            if not (datetime.datetime.now() <= cbdt <= datetime.datetime.now()+datetime.timedelta(days=180)): raise ValueError
+            # 24h grace on the lower bound: advocate enters a local wall-clock time while the server
+            # clock is UTC (advocates span US Central + Honduras), so a valid same-day callback can
+            # read as slightly 'past' — accept it rather than 400 the whole disposition.
+            lo=datetime.datetime.now()-datetime.timedelta(hours=24)
+            hi=datetime.datetime.now()+datetime.timedelta(days=180)
+            if not (lo <= cbdt <= hi): raise ValueError
             cb=cbdt.isoformat(timespec='minutes')
         except (ValueError,TypeError):
             raise HTTPException(400,'Callback Scheduled requires a valid date/time within the next 180 days')
+    # situational reschedule: advocate's chosen time, else a sensible default (member stays in sequence)
+    if d in SITUATION_DAYS and not cb:
+        cb=(datetime.datetime.now()+datetime.timedelta(days=SITUATION_DAYS[d])).isoformat(timespec='minutes')
+    appt_new=None
+    if d=='Appointment changed':
+        try: appt_new=datetime.date.fromisoformat((f.get('hcp_date') or '')[:10])
+        except ValueError: raise HTTPException(400,'Appointment changed needs the new appointment date')
     c.execute("""INSERT INTO dispositions(ts,actor,member_id,batch_id,disposition,note,served_at,call_click_at,text_click_at,handle_secs)
         VALUES(?,?,?,?,?,?,?,?,?,?)""",(now(),u['email'],mid,bid,d,(f.get('note') or '')[:400],served,
         f.get('call_click_at'),f.get('text_click_at'),handle))
     bm=c.execute("SELECT stage,hcp_date,stage_attempts FROM batch_members WHERE batch_id=? AND member_id=?",(bid,mid)).fetchone()
     stage=bm['stage'] or 'initial'; hcp=bm['hcp_date']; attempts=(bm['stage_attempts'] or 0)+1
     terminal = d in ('Refused / Remove','DQ — Clinical','Deceased','Bad Number') or d.startswith('Connected')
-    if cb:
-        c.execute("UPDATE batch_members SET state='callback', callback_at=?, stage_attempts=? WHERE batch_id=? AND member_id=?",(cb,attempts,bid,mid))
+    if d=='Appointment changed' and appt_new:
+        newcb=max(appt_new-datetime.timedelta(days=PRE_WINDOW_DAYS),datetime.date.today()).isoformat()+'T09:00'
+        c.execute("UPDATE batch_members SET state='callback', callback_at=?, hcp_date=?, stage='pre_hcp', stage_attempts=0 WHERE batch_id=? AND member_id=?",(newcb,appt_new.isoformat(),bid,mid))
+        c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+            (mid,now()[:10],f'Appointment updated ({u["display"]})',f'New HCP appt {appt_new.isoformat()} — Pre-HCP re-scheduled','O'))
+    elif cb:
+        c.execute("UPDATE batch_members SET state='callback', callback_at=?, stage_attempts=? WHERE batch_id=? AND member_id=?",(cb,(bm['stage_attempts'] or 0),bid,mid))
     elif stage=='pre_hcp' and not terminal and hcp:
         retry=next_pre_retry(hcp,attempts)
         if retry:
@@ -530,12 +675,20 @@ async def disposition(req: Request):
             c.execute("UPDATE batch_members SET state='done', stage='missed_post' WHERE batch_id=? AND member_id=?",(bid,mid))
             c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
                 (mid,now()[:10],'Post-HCP window closed','Not reached in 3 post-HCP attempts','O'))
+    elif stage=='initial' and not terminal:
+        if attempts<MAX_STAGE_ATTEMPTS:
+            retry=(datetime.date.today()+datetime.timedelta(days=INITIAL_RETRY_DAYS)).isoformat()+'T09:00'
+            c.execute("UPDATE batch_members SET state='callback', callback_at=?, stage_attempts=? WHERE batch_id=? AND member_id=?",(retry,attempts,bid,mid))
+        else:
+            c.execute("UPDATE batch_members SET state='done', stage='no_contact' WHERE batch_id=? AND member_id=?",(bid,mid))
+            c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+                (mid,now()[:10],'Initial outreach closed','Not reached in 3 attempts','O'))
     else:
         c.execute("UPDATE batch_members SET state='done' WHERE batch_id=? AND member_id=?",(bid,mid))
     # write back into the master log table inside app.db mirror (export to CRM_Master.db is a director action)
     c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
         (mid, now()[:10], f'Advocate Call ({u["display"]})', d + ((' — '+f.get('note')) if f.get('note') else ''),
-         'C' if d.startswith('Connected') else ('B' if d=='Bad Number' else 'A' if d in('Left Voicemail','No Answer') else 'O')))
+         'C' if (d.startswith('Connected') or d in('Reached someone else','Appointment changed')) else ('B' if d=='Bad Number' else 'A' if d in('Left Voicemail','No Answer') else 'O')))
     if d in ('Refused / Remove','Deceased'):
         c.execute("UPDATE member_core SET refused=1 WHERE member_id=?",(mid,))
     c.commit()
@@ -562,12 +715,55 @@ def full_dashboard(req: Request):
         raise HTTPException(404, 'dashboard.html not found on the data volume — upload it: '
             'gcloud storage cp "CRM Review Dashboard.html" gs://research-catalyst-crm-data/dashboard.html')
     audit(u['email'], 'dashboard_open')
-    return HTMLResponse(open(DASH_PATH, encoding='utf-8').read())
+    html = open(DASH_PATH, encoding='utf-8').read()
+    # LIVE SHIM — appended, never modifies the dashboard's own code. After the dashboard's
+    # init() finishes, fetch every advocate action logged since the payload was built,
+    # append them as communication events, and rerun the dashboard's own recompute/apply.
+    # tiny fixed link to the batch console (dashboard stays 100% unchanged otherwise)
+    console_link = '<a href="/director'+('?as='+u['email'] if DEV else '')+'" style="position:fixed;top:8px;right:12px;z-index:9999;background:#101828;color:#fff;padding:6px 12px;border-radius:8px;font:600 12px system-ui,sans-serif;text-decoration:none;box-shadow:0 1px 3px #0003">⚙ Batch console ↗</a>'
+    shim = console_link + """
+<script>
+(function(){
+ var qs=new URLSearchParams(location.search); var AS=qs.get('as')?('?as='+qs.get('as')):'';
+ function ready(){return (typeof DATA!=='undefined')&&(typeof COM!=='undefined')&&DATA&&DATA.length&&document.getElementById('app')&&document.getElementById('app').style.display!=='none';}
+ function applyDelta(d){var n=0;
+  for(var mid in d.events){ if(!COM[mid])COM[mid]=[];
+   d.events[mid].forEach(function(e){COM[mid].unshift(e);n++;});}
+  try{ if(typeof recompute==='function')recompute(); if(typeof apply==='function')apply(); }catch(err){console.warn('live-merge recompute:',err);}
+  console.log('CRM live merge: '+n+' advocate events through '+d.through);}
+ function go(){ if(!ready()){setTimeout(go,400);return;}
+  fetch('/api/dir/dashboard_delta'+AS).then(function(r){return r.json();}).then(applyDelta)
+  .catch(function(e){console.warn('live delta unavailable:',e);});}
+ go();
+})();
+</script>"""
+    return HTMLResponse(html.replace('</body>', shim + '</body>') if '</body>' in html else html + shim)
+
+@app.get('/api/dir/dashboard_delta')
+def dashboard_delta(req: Request):
+    """Advocate activity since the dashboard payload was built, shaped as dashboard comm events."""
+    u = who(req); need(u, 'director'); c = db()
+    ev = {}
+    n = 0
+    for r in c.execute("""SELECT member_id, ts, actor, disposition, note FROM dispositions ORDER BY id"""):
+        kind = r['disposition']
+        detail = kind + ((' — ' + r['note']) if r['note'] else '')
+        e = [r['ts'][:10], 'Advocacy App', 'Note (' + r['actor'].split('@')[0] + ')', detail[:400], '']
+        ev.setdefault(r['member_id'], []).append(e)
+    for r in c.execute("""SELECT member_id, date, event_type, detail, cls FROM comm_hist
+        WHERE event_type IN ('Assigned to advocate','Unassigned from advocate') ORDER BY rowid"""):
+        e = [(r['date'] or '')[:10], 'Advocacy App', r['event_type'], (r['detail'] or '')[:400], r['cls'] or 'O']
+        ev.setdefault(r['member_id'], []).append(e)
+        n += 1
+    audit(u['email'], 'dashboard_delta', meta={'events': n})
+    return {'through': now(), 'events': ev, 'count': n}
 
 from ui import DIRECTOR_HTML, ADVOCATE_HTML
+
 @app.get('/director', response_class=HTMLResponse)
 def director_page(req: Request):
     u=who(req); need(u,'director'); return DIRECTOR_HTML.replace('__ME__',u['email'])
+
 @app.get('/advocate', response_class=HTMLResponse)
 def advocate_page(req: Request):
     u=who(req); need(u,'advocate'); return ADVOCATE_HTML.replace('__ME__',u['display'])
