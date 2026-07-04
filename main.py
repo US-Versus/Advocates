@@ -551,6 +551,19 @@ def adv_summary(req: Request):
     return {'today': r['n'] or 0, 'connected': r['conn'] or 0}
 
 # ---------------- pages ----------------
+DASH_PATH = os.environ.get('DASH_PATH', os.path.join(os.path.dirname(DB), 'dashboard.html'))
+
+@app.get('/dashboard', response_class=HTMLResponse)
+def full_dashboard(req: Request):
+    """The director's own CRM Review Dashboard — served byte-for-byte, unchanged.
+    Director-only, IAP-fronted, access audited. Contains full member payload incl. emails."""
+    u = who(req); need(u, 'director')
+    if not os.path.exists(DASH_PATH):
+        raise HTTPException(404, 'dashboard.html not found on the data volume — upload it: '
+            'gcloud storage cp "CRM Review Dashboard.html" gs://research-catalyst-crm-data/dashboard.html')
+    audit(u['email'], 'dashboard_open')
+    return HTMLResponse(open(DASH_PATH, encoding='utf-8').read())
+
 from ui import DIRECTOR_HTML, ADVOCATE_HTML
 @app.get('/director', response_class=HTMLResponse)
 def director_page(req: Request):

@@ -76,7 +76,7 @@ DIRECTOR_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name=
 .mdetail{background:#fafbfc;border:1px solid #e3e8ef;border-radius:8px;padding:10px 14px;margin:6px 0}
 .pager2{display:flex;gap:10px;align-items:center;margin-top:8px}
 </style></head><body>
-<header><h1>🎖 Director</h1><span class="sp"></span><span class="me">__ME__</span></header>
+<header><h1>🎖 Director</h1><a href="/dashboard" target="_blank" style="margin-left:14px;color:#93c5fd;font-size:13px;font-weight:600;text-decoration:none">🗂 Full Review Dashboard ↗</a><span class="sp"></span><span class="me">__ME__</span></header>
 <div class="wrap">
 <div class="stats" id="stats"></div>
 <div class="panel"><h3>📊 The pie <span class="muted" style="font-size:11px">whole eligible base — click a slice to see those members</span></h3>
@@ -223,7 +223,11 @@ async function loadMembers(){const B=$('tabbody');
 async function openTab(k){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.t===k));const B=$('tabbody');B.innerHTML='<span class="muted">loading…</span>';
  if(k==='members'){await loadMembers();return;}
  if(k==='batches'){const bs=await api('/api/dir/batches');
-  B.innerHTML=bs.length?'<table><tr><th>#</th><th>Name</th><th>Advocate</th><th>Done</th><th>Callbacks</th><th>Status</th><th></th></tr>'+bs.map(b=>`<tr><td>${b.id}</td><td>${esc(b.name)}</td><td>${esc(b.advocate)}</td><td>${b.done||0}/${b.total}</td><td>${b.callbacks||0}</td><td>${b.status}</td><td><button class="sec" onclick="batchDetail(${b.id})">detail</button> ${b.status==='open'?`<button class="bad" onclick="closeB(${b.id})">close</button>`:''}</td></tr>`).join('')+'</table><div id="bdetail"></div>':'<span class="muted">No batches yet — build one above. It lands here with live progress.</span>';}
+  B.innerHTML=bs.length?'<table><tr><th>#</th><th>Name</th><th>Advocate</th><th>Done</th><th>Callbacks</th><th>Status</th><th></th></tr>'+bs.map(b=>`<tr><td>${b.id}</td><td>${esc(b.name)}</td><td>${esc(b.advocate)}</td><td>${b.done||0}/${b.total}</td><td>${b.callbacks||0}</td><td>${b.status}</td><td><button class="sec" onclick="batchDetail(${b.id})">detail</button> ${b.status==='open'?`<button class="bad" onclick="closeB(${b.id})">close</button>`:''}</td></tr>`).join('')+'</table><div id="bdetail"></div>':'<span class="muted">No batches yet — build one above, or import a batch CSV exported from your Review Dashboard.</span>';
+  B.innerHTML+=`<div class="row" style="margin-top:10px;border-top:1px dashed #e3e8ef;padding-top:8px">
+   <span class="lbl">Import dashboard batch CSV</span><input type="file" id="bcsv" accept=".csv">
+   <select id="bcsvadv"></select><button class="sec" onclick="importCsv()">Import & assign</button></div>`;
+  api('/api/dir/users').then(us=>{$('bcsvadv').innerHTML=us.filter(x=>x.role==='advocate'&&x.active).map(x=>`<option value="${x.email}">${esc(x.display)}</option>`).join('');});}
  else if(k==='funnel'){const f=await api('/api/dir/funnel');const st={};f.forEach(r=>{st[r.stage]=st[r.stage]||{};st[r.stage][r.state]=r.n});
   const stages=['initial','pre_hcp','post_hcp','complete','missed_post','no_appt','dq'];
   B.innerHTML='<table><tr><th>Stage</th><th>Pending</th><th>Callback set</th><th>Done</th></tr>'+stages.map(sg=>{const x=st[sg]||{};return `<tr><td><b>${sg.replace('_',' ')}</b></td><td>${x.pending||0}</td><td>${x.callback||0}</td><td>${x.done||0}</td></tr>`}).join('')+'</table>';}
@@ -257,6 +261,15 @@ async function saveScripts(){const S=window._SCR;if(!S)return;
   qtype:q.kind==='q'?document.querySelector(`select[data-qid="${q.id}"][data-f="qtype"]`).value:q.qtype,
   options:q.kind==='q'?document.querySelector(`input[data-qid="${q.id}"][data-f="options"]`).value:(q.options||'')}));
  await api('/api/dir/scripts',{method:'POST',body:JSON.stringify({scripts,questions})});toast('scripts & guide saved');}
+async function importCsv(){const f=$('bcsv').files[0];if(!f){toast('Pick the CSV first');return;}
+ const txt=await f.text();const lines=txt.split(/\r?\n/).filter(Boolean);
+ const hdr=lines[0].toLowerCase().split(',').map(x=>x.replace(/"/g,'').trim());
+ const idi=hdr.indexOf('member_id');const nmi=hdr.indexOf('batch');
+ if(idi<0){toast('CSV needs a member_id column (use the dashboard 📦 export)');return;}
+ const ids=lines.slice(1).map(l=>l.split(',')[idi].replace(/"/g,'').trim()).filter(Boolean);
+ const name=(nmi>=0&&lines[1])?lines[1].split(',')[nmi].replace(/"/g,'').trim():f.name.replace(/\.csv$/i,'');
+ const r=await api('/api/dir/import_batch',{method:'POST',body:JSON.stringify({name,advocate:$('bcsvadv').value,member_ids:ids})});
+ toast(`✅ Imported batch #${r.batch_id}: ${r.accepted} accepted, ${r.rejected} rejected (already plated/refused/no phone)`);openTab('batches');loadStats();loadPie();}
 async function batchDetail(id){const d=await api('/api/dir/batch/'+id);
  $('bdetail').innerHTML='<h4 style="margin-top:12px">Batch '+id+'</h4><div>'+d.summary.map(s=>`<span class="qtag">${esc(s.disposition)}: ${s.n}</span>`).join(' ')+'</div>'+
  (d.left&&d.left.length?'<div class="lbl" style="margin-top:8px">Left on the table ('+d.left.length+')</div><div style="font-size:12px;max-height:140px;overflow-y:auto">'+d.left.map(x=>`${esc(x.first)} ${esc(x.last)} (${esc(x.state)}) — ${x.bstate}${x.stage?'/'+x.stage:''}${x.callback_at?' · due '+x.callback_at.slice(0,16):''}`).join('<br>')+'</div>':'<div class="muted" style="margin-top:8px">Nothing left — plate clean.</div>')+
