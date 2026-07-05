@@ -847,7 +847,11 @@ def adv_summary(req: Request):
     today = now()[:10]
     r = c.execute("""SELECT COUNT(*) n, SUM(CASE WHEN disposition LIKE 'Connected%' THEN 1 ELSE 0 END) conn
         FROM dispositions WHERE actor=? AND ts LIKE ?""",(u['email'],today+'%')).fetchone()
-    return {'today': r['n'] or 0, 'connected': r['conn'] or 0}
+    f = c.execute("""SELECT SUM(CASE WHEN ts LIKE ? THEN 1 ELSE 0 END) ftoday, COUNT(*) fmonth
+        FROM dispositions WHERE actor=? AND disposition LIKE 'Connected — Guide completed%' AND ts LIKE ?""",
+        (today+'%',u['email'],today[:7]+'%')).fetchone()
+    return {'today': r['n'] or 0, 'connected': r['conn'] or 0,
+            'forms_today': f['ftoday'] or 0, 'forms_month': f['fmonth'] or 0}
 
 # ---------------- pages ----------------
 DASH_PATH = os.environ.get('DASH_PATH', os.path.join(os.path.dirname(DB), 'dashboard.html'))

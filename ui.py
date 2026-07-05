@@ -338,7 +338,10 @@ document.querySelector('[data-p="fresh"]').click();
 DIRECTOR_HTML = DIRECTOR_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)
 
 ADVOCATE_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CRM — My Members</title><style>__CSS__</style></head><body>
+<title>CRM — My Members</title><style>__CSS__
+.dgrid button.on{background:#0b6e4f;border-color:#0b6e4f;color:#fff;font-weight:700}
+#stageSeg button.on{background:#2563eb;border-color:#2563eb;color:#fff}
+.savedbar{border:1px solid #16a34a;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}</style></head><body>
 <header><h1>📞 My Members</h1><span class="sp"></span><span class="me" id="tally"></span><span class="me">__ME__</span></header>
 <div class="wrap">
 <div class="tabs" id="tabs"></div>
@@ -350,7 +353,7 @@ const SMS_ENABLED=true; // texting ON — unbranded texts, no MLR required
 const VIEWS=[['due','⏰ Due now'],['queue','📋 To call'],['callbacks','📅 Callbacks set'],['done','✅ Done today']];
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
-async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`today: ${s.today} worked · ${s.connected} connected`;}
+async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
 async function load(){tabs();const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
@@ -396,25 +399,41 @@ async function openRow(mid){const L=$('list');
    <span class="muted" style="font-size:11px">Google Voice opens in a side window · 💬 copies the number → paste it in the To field · every click is logged</span></div>
   <div class="lbl">Call log</div>
   <div class="hist">${(M.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>'}</div>
-  <div class="row" style="margin-top:12px"><button class="good" style="font-size:15px;padding:10px 20px" onclick="openGuide()">🟢 Connected — open guide</button>
-   <span class="seg" id="stageSeg">${['initial','pre_hcp','post_hcp'].map(s=>`<button data-st="${s}" class="${s===M.stage?'on':''}">${s==='initial'?'Initial':s==='pre_hcp'?'Pre-HCP':'Post-HCP'}</button>`).join('')}</span>
-   <span class="muted" style="font-size:11px">wrong call type? switch — e.g. the appointment already happened</span></div>
+  <div class="row" style="margin-top:12px"><span class="lbl" style="min-width:auto">Connected? Open the form:</span>
+   <span class="seg" id="stageSeg">${['initial','pre_hcp','post_hcp'].map(s=>`<button data-st="${s}">${s==='initial'?'Initial':s==='pre_hcp'?'Pre-HCP':'Post-HCP'}</button>`).join('')}</span>
+   <span class="muted" style="font-size:11px">tap to open the discussion form · tap again to close · scheduled type: <b>${esc((M.stage_title||M.stage).split('(')[0])}</b></span></div>
   <div id="guide" style="display:none"></div>
   <div class="lbl" style="margin-top:12px">Note <span class="muted" style="text-transform:none;font-weight:400">— always saved, on any outcome</span></div>
   <textarea id="note" placeholder="What happened on this call? (e.g. spoke to husband, wife not home; wants to reschedule after 5pm; in hospital, try in 2 weeks)" style="width:100%;height:52px"></textarea>
-  <div class="lbl" style="margin-top:8px">Situation</div>
-  <div class="dgrid">${SIT.map(d=>`<button class="sec" onclick="disp('${d}')">${d}</button>`).join('')}</div>
+  <div class="lbl" style="margin-top:8px">Situation <span class="muted" style="text-transform:none;font-weight:400">— tap to select, tap again to unselect</span></div>
+  <div class="dgrid">${SIT.map(d=>`<button class="sec" data-o="${d}">${d}</button>`).join('')}</div>
   <div class="lbl" style="margin-top:8px">No-connect</div>
-  <div class="dgrid">${DISP.map(d=>`<button class="sec" onclick="disp('${d}')">${d}</button>`).join('')}</div>
+  <div class="dgrid">${DISP.map(d=>`<button class="sec" data-o="${d}">${d}</button>`).join('')}</div>
   <div class="row"><span class="lbl" style="min-width:auto">New appt date</span><input id="newappt" type="date" title="if the appointment changed"><span class="lbl" style="min-width:auto">Callback</span><input id="cbat" type="datetime-local" title="callback time"></div>
+  <div class="row" style="margin-top:10px"><button class="good" style="font-size:15px;padding:10px 20px" onclick="saveOutcome()">💾 Save call result</button>
+   <span class="muted" style="font-size:11px">nothing saves until you press this (forms save with their own button) · then navigate below, or use the tabs above</span></div>
+  <div class="row" style="margin-top:6px"><button class="sec" onclick="prevMember()">← previous</button><button class="sec" onclick="OPENMID=null;load()">☰ back to list</button><button class="sec" onclick="nextMember()">next →</button></div>
  </div>`;
  drow.scrollIntoView({behavior:'smooth',block:'nearest'});}
+function prevMember(){const i=LASTROWS.indexOf(M.member_id);if(i>0)openRow(LASTROWS[i-1]);else toast('Top of list');}
+function nextMember(){const i=LASTROWS.indexOf(M.member_id);if(i>=0&&i<LASTROWS.length-1)openRow(LASTROWS[i+1]);else{OPENMID=null;load();toast('End of list');}}
+function savedBanner(outcome){const c=$('card');if(!c)return;
+ const div=document.createElement('div');div.className='savedbar';
+ div.innerHTML=`✔ <b>Saved:</b> ${esc(outcome)} <span style="flex:1"></span><button class="sec" onclick="prevMember()">← previous</button><button class="sec" onclick="OPENMID=null;load()">☰ back to list</button><button class="good" onclick="nextMember()">next member →</button>`;
+ c.appendChild(div);div.scrollIntoView({behavior:'smooth',block:'nearest'});}
+document.addEventListener('click',e=>{const b=e.target.closest('#card .dgrid [data-o]');if(!b)return;
+ const was=b.classList.contains('on');
+ document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
+ if(!was)b.classList.add('on');});
 async function switchStage(s){const g=await api('/api/adv/guide/'+M.member_id+(AS?AS+'&':'?')+'stage='+s);
- M.stage=g.stage;M.stage_title=g.stage_title;M.stage_script=g.stage_script;M.guide=g.guide;
- document.querySelectorAll('#stageSeg button').forEach(b=>b.classList.toggle('on',b.dataset.st===s));
- const gd=$('guide');if(gd&&gd.style.display!=='none')openGuide();
- toast('Guide switched to '+g.stage_title.split('(')[0]);}
-document.addEventListener('click',e=>{const b=e.target.closest('#stageSeg [data-st]');if(b)switchStage(b.dataset.st);});
+ M.stage=g.stage;M.stage_title=g.stage_title;M.stage_script=g.stage_script;M.guide=g.guide;}
+async function stageToggle(s){const gd=$('guide');
+ if(gd&&gd.style.display!=='none'&&M.stage===s){ // tap again on the open form -> close it
+  gd.style.display='none';document.querySelectorAll('#stageSeg [data-st]').forEach(b=>b.classList.remove('on'));return;}
+ if(M.stage!==s)await switchStage(s);
+ document.querySelectorAll('#stageSeg [data-st]').forEach(b=>b.classList.toggle('on',b.dataset.st===s));
+ openGuide();}
+document.addEventListener('click',e=>{const b=e.target.closest('#stageSeg [data-st]');if(b)stageToggle(b.dataset.st);});
 function gvOpen(url){window.open(url,'gv','popup,width=520,height=760,left='+Math.max(0,(screen.availWidth||1280)-540)+',top=40');}
 async function copyText(){if(!SMS_ENABLED){toast('💬 Texting is off for now — use Call');return;}const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind:'text'})});M.text_click_at=r.ts;
  try{await navigator.clipboard.writeText(M.phone_e164||'');}catch(e){}
@@ -499,10 +518,14 @@ async function submitGuide(){
  try{
   const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
   if(r.dup){toast('Already saved — '+r.outcome);return;}   // retry of a recorded submit: no re-advance
-  toast('Saved — '+r.outcome);tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}
+  toast('Saved — '+r.outcome);tally();
+  if(RUNNING){RUNI++;stepRun();}else{savedBanner(r.outcome);}   // stay on the card — advocate chooses where to go
  }finally{BUSY=false;}}
-async function disp(d){
+async function saveOutcome(){
  if(BUSY)return;
+ const sel=document.querySelector('#card .dgrid [data-o].on');
+ if(!sel){toast('Select an outcome first — or open a form above and save it there');return;}
+ const d=sel.dataset.o;
  if(d==='Appointment changed'&&!($('newappt')&&$('newappt').value)){toast('Enter the new appointment date first');return;}
  const body={member_id:M.member_id,disposition:d,note:$('note')?$('note').value:'',served_at:M.served_at,
   call_click_at:M.call_click_at,text_click_at:M.text_click_at,
@@ -510,7 +533,10 @@ async function disp(d){
   hcp_date:($('newappt')&&$('newappt').value)||null};
  BUSY=true;
  try{
-  await api('/api/adv/disposition',{method:'POST',body:JSON.stringify(body)});toast(d+' logged');tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}
+  await api('/api/adv/disposition',{method:'POST',body:JSON.stringify(body)});
+  toast(d+' saved');tally();
+  document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
+  savedBanner(d);   // stay on the card — advocate navigates with the buttons or tabs
  }finally{BUSY=false;}}
 tally();load();
 </script></body></html>"""
