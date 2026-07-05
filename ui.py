@@ -441,8 +441,10 @@ async function stepRun(){if(RUNI>=RUNQ.length){return endRun(true);}
    <button class="sec" onclick="runDisp('Skipped','skipped in rapid dial')">⏭ Skip</button></div>
   <div id="guide" style="display:none"></div></div>`;
  window.scrollTo({top:0,behavior:'smooth'});}
-async function runDisp(d,note){const nb=$('note');const n=note||(nb?nb.value:'');
- await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:d,note:n,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});toast(d+' logged — next');RUNI++;tally();stepRun();}
+async function runDisp(d,note){if(BUSY)return;const nb=$('note');const n=note||(nb?nb.value:'');
+ BUSY=true;
+ try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:d,note:n,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});toast(d+' logged — next');RUNI++;tally();stepRun();}
+ finally{BUSY=false;}}
 async function runAppt(){const t=prompt('New appointment date (YYYY-MM-DD):');if(!t)return;
  try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:'Appointment changed',hcp_date:t.slice(0,10),note:($('note')?$('note').value:''),served_at:M.served_at,call_click_at:M.call_click_at})});toast('Appt updated — cadence re-timed');RUNI++;tally();stepRun();}
  catch(e){toast('Enter a valid date YYYY-MM-DD')}}
@@ -474,21 +476,30 @@ function answerOf(seq){const els=[...document.querySelectorAll(`#guide [data-seq
 function reeval(){document.querySelectorAll('#guide .gitem').forEach(el=>{const ctrl=el.dataset.show;if(!ctrl)return;
  const want=el.dataset.showvals.split('|');const got=answerOf(ctrl);
  el.style.display=(got&&want.some(w=>got.includes(w)))?'':'none';});}
+let BUSY=false;  // one in-flight outcome at a time — double-click writes nothing twice
 async function submitGuide(){
+ if(BUSY)return;
  const seen=new Set();const answers=[];
  document.querySelectorAll('#guide .gitem').forEach(el=>{if(el.style.display==='none')return;
   const q=el.querySelector('[data-qid]');if(!q)return;const qid=+q.dataset.qid;if(seen.has(qid))return;seen.add(qid);
   const v=answerOf(q.dataset.seq);if(v)answers.push({qid,answer:v});});
  if(!answers.length){toast('Record at least one answer');return;}
- const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
- toast('Saved — '+r.outcome);tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}}
+ BUSY=true;
+ try{
+  const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
+  toast('Saved — '+r.outcome);tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}
+ }finally{BUSY=false;}}
 async function disp(d){
+ if(BUSY)return;
  if(d==='Appointment changed'&&!($('newappt')&&$('newappt').value)){toast('Enter the new appointment date first');return;}
  const body={member_id:M.member_id,disposition:d,note:$('note')?$('note').value:'',served_at:M.served_at,
   call_click_at:M.call_click_at,text_click_at:M.text_click_at,
   callback_at:($('cbat')&&$('cbat').value)||null,
   hcp_date:($('newappt')&&$('newappt').value)||null};
- await api('/api/adv/disposition',{method:'POST',body:JSON.stringify(body)});toast(d+' logged');tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}}
+ BUSY=true;
+ try{
+  await api('/api/adv/disposition',{method:'POST',body:JSON.stringify(body)});toast(d+' logged');tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}
+ }finally{BUSY=false;}}
 tally();load();
 </script></body></html>"""
 ADVOCATE_HTML = ADVOCATE_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)

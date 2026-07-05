@@ -191,7 +191,7 @@ def member_detail(mid:str, req: Request):
     u=who(req); need(u,'director'); c=db()
     m=c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
     if not m: raise HTTPException(404,'no such member')
-    hist=[dict(h) for h in c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,))]
+    hist=[dict(h) for h in c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? ORDER BY date DESC, rowid DESC LIMIT 15",(mid,))]
     ans=[dict(a) for a in c.execute("SELECT ts,stage,prompt,answer,actor FROM answers WHERE member_id=? ORDER BY id DESC LIMIT 30",(mid,))]
     bt=[dict(b) for b in c.execute("""SELECT b.id,b.name,b.advocate,b.status,bm.state,bm.stage,bm.callback_at,bm.hcp_date
         FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE bm.member_id=? ORDER BY b.id DESC""",(mid,))]
@@ -413,13 +413,56 @@ def adv_scope(c, email, mid):
         WHERE b.advocate=? AND b.status='open' AND bm.member_id=? AND bm.state IN('pending','served','callback')
         ORDER BY bm.batch_id DESC LIMIT 1""",(email,mid)).fetchone()
 
-CLINICAL_MAP = {  # guide (stage,seq) -> clinical-timeline attribute; advocate answers become timeline events + filter facets
- ('initial',7):'OFF disruptive confirmed', ('initial',9):'OFF symptoms', ('initial',10):'OFF status',
- ('initial',13):'On oral levodopa', ('post_hcp',2):'OFF status (post-HCP)', ('post_hcp',3):'Treatment change after HCP',
+_ENG=('CONDSYM','Advocate engagement (live)'); _OFFG=('CONDSYM','Motor complications — OFF / tremor')
+CAPTURE_MAP = {  # guide (stage,seq) -> durable member event: the answer becomes a comm_hist row keyed by member_id,
+ # which live-merges into the Review Dashboard timeline + filter facets (and the member cards, newest-first).
+ # kind: M=medical  E=engagement  K=contact (Contact: prefix, cls 'O', never reaches the dashboard).
+ # grp: (facet box, group) or None = timeline-only.  fan: check answers write one event per selected option.
+ ('initial',3):  dict(attr='Sponsor consent', kind='E', grp=_ENG, fan=False),
+ ('initial',7):  dict(attr='OFF disruptive confirmed', kind='M', grp=_OFFG, fan=False),
+ ('initial',9):  dict(attr='OFF symptoms', kind='M', grp=_OFFG, fan=True),
+ ('initial',10): dict(attr='OFF status', kind='M', grp=_OFFG, fan=False),
+ ('initial',13): dict(attr='On oral levodopa', kind='M', grp=('TREATMENT','Oral dopaminergic therapy'), fan=False),
+ ('initial',22): dict(attr='Contra: 5-HT3 antiemetic', kind='M', grp=None, fan=False),
+ ('initial',24): dict(attr='Contra: apomorphine allergy', kind='M', grp=None, fan=False),
+ ('initial',26): dict(attr='Contra: sulfite allergy', kind='M', grp=None, fan=False),
+ ('initial',28): dict(attr='Contra: hydrochloric acid allergy', kind='M', grp=None, fan=False),
+ ('initial',31): dict(attr='GOOD ON — description', kind='M', grp=None, fan=False),
+ ('initial',32): dict(attr='GOOD ON — daily amount', kind='M', grp=None, fan=False),
+ ('initial',40): dict(attr='Materials requested', kind='E', grp=_ENG, fan=False),
+ ('initial',41): dict(attr='Materials preference', kind='K', grp=None, fan=False),
+ ('initial',42): dict(attr='Circle of Care interest', kind='E', grp=_ENG, fan=False),
+ ('pre_hcp',6):  dict(attr='Materials received', kind='E', grp=_ENG, fan=False),
+ ('pre_hcp',13): dict(attr='OFF impact on relationships', kind='M', grp=_OFFG, fan=False),
+ ('pre_hcp',15): dict(attr='Sponsor consent (pre-HCP)', kind='E', grp=_ENG, fan=False),
+ ('pre_hcp',18): dict(attr='Contra: 5-HT3 antiemetic', kind='M', grp=None, fan=False),
+ ('pre_hcp',20): dict(attr='Contra: apomorphine allergy', kind='M', grp=None, fan=False),
+ ('pre_hcp',22): dict(attr='Contra: sulfite allergy', kind='M', grp=None, fan=False),
+ ('pre_hcp',24): dict(attr='Contra: hydrochloric acid allergy', kind='M', grp=None, fan=False),
+ ('pre_hcp',31): dict(attr='Materials requested', kind='E', grp=_ENG, fan=False),
+ ('pre_hcp',32): dict(attr='Materials preference', kind='K', grp=None, fan=False),
+ ('post_hcp',2): dict(attr='OFF status (post-HCP)', kind='M', grp=_OFFG, fan=False),
+ ('post_hcp',3): dict(attr='Treatment change after HCP', kind='M', grp=('TREATMENT','Advocate capture — treatment (live)'), fan=True),
+ ('post_hcp',9): dict(attr='Discussed ONAPGO with HCP', kind='E', grp=_ENG, fan=False),
+ ('post_hcp',10):dict(attr='Barrier to ONAPGO discussion', kind='E', grp=_ENG, fan=True),
+ ('post_hcp',11):dict(attr='ONAPGO concerns (verbatim)', kind='M', grp=None, fan=False),
+ ('post_hcp',13):dict(attr='Materials requested', kind='E', grp=_ENG, fan=False),
+ ('post_hcp',14):dict(attr='Materials preference', kind='K', grp=None, fan=False),
 }
+_HCP_ENT = dict(attr='Next HCP appointment', kind='E', grp=None, fan=False)   # any sched='hcp' question
+def _capture_startup():
+    """Log-only sanity: every CAPTURE_MAP key must be a live question. Plus one additive index (idempotent)."""
+    try:
+        c=db()
+        have={(r['stage'],r['seq']) for r in c.execute("SELECT stage,seq FROM guide_items WHERE kind='q'")}
+        missing=[k for k in CAPTURE_MAP if k not in have]
+        if missing: print('WARN: CAPTURE_MAP keys with no matching guide question:', missing)
+        c.execute("CREATE INDEX IF NOT EXISTS ix_ch_et ON comm_hist(event_type, date)"); c.commit()
+    except Exception as e: print('capture startup check skipped:', e)
+_capture_startup()
 def build_card(c, u, bid, mid):
     m = c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
-    hist = c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,)).fetchall()
+    hist = c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? ORDER BY date DESC, rowid DESC LIMIT 15",(mid,)).fetchall()
     b = c.execute("SELECT name,script_hint FROM batches WHERE id=?",(bid,)).fetchone()
     bm = c.execute("SELECT stage,hcp_date,stage_attempts FROM batch_members WHERE batch_id=? AND member_id=?",(bid,mid)).fetchone()
     stage = bm['stage'] or 'initial'
@@ -554,17 +597,34 @@ async def guide_submit(req: Request):
     override=f.get('stage')
     if override in ('initial','pre_hcp','post_hcp') and override!=stage:
         stage=override   # advocate corrected the call type (appt happened earlier / hasn't happened yet)
+    # idempotence guard — BEFORE any insert: a double-click or network retry of the same guide on the
+    # same day returns the prior outcome and writes nothing (answers/clinical rows/disposition all skip).
+    prev=c.execute("""SELECT note FROM dispositions WHERE member_id=? AND batch_id=? AND disposition=?
+        AND date(ts)=date('now','localtime') ORDER BY id DESC LIMIT 1""",
+        (mid,bid,'Connected — Guide completed ('+stage+')')).fetchone()
+    if prev:
+        audit(u['email'],'guide_submit',mid,bid,meta={'stage':stage,'dup':True})
+        return {'ok':True,'dup':True,'outcome':(prev['note'] or '').split(' | ')[0]}
     hcp=None; dq=False; lines=[]; call_doctor_yes=False
     for a in (f.get('answers') or []):
         it=c.execute("SELECT * FROM guide_items WHERE id=? AND stage=? AND kind='q'",(a.get('qid'),stage)).fetchone()
         if not it: continue
-        val=str(a.get('answer') or '').strip()[:500]
+        val=str(a.get('answer') or '').strip()[:800]
         if not val: continue
         c.execute("INSERT INTO answers(ts,actor,member_id,batch_id,stage,question_id,prompt,answer) VALUES(?,?,?,?,?,?,?,?)",
             (now(),u['email'],mid,bid,stage,it['id'],it['text'][:200],val))
         lines.append(f"{it['text'][:60]} -> {val}")
-        _cattr=('Next HCP appointment' if it['sched']=='hcp' else CLINICAL_MAP.get((stage,it['seq'])))
-        if _cattr: c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",(mid,now()[:10],'Clinical: '+_cattr,val,'M'))
+        ent=(_HCP_ENT if it['sched']=='hcp' else CAPTURE_MAP.get((stage,it['seq'])))
+        if ent:
+            pre,cls=('Contact: ','O') if ent['kind']=='K' else ('Clinical: ','M')
+            if ent['fan'] and it['qtype']=='check':   # one durable event per selected option; exact-match
+                opts=(it['options'] or '').split('|') # against the live options drops truncation fragments
+                vals=[p.strip() for p in val.split('; ') if p.strip() in opts] or [val[:200]]
+            else:
+                vals=[val[:200]]
+            for v in vals:
+                c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+                    (mid,now()[:10],pre+ent['attr'],v,cls))
         if it['sched']=='hcp':
             try: hcp=datetime.date.fromisoformat(val[:10]).isoformat()
             except ValueError: pass  # invalid calendar date -> ignore, advocate can re-ask
@@ -738,15 +798,46 @@ def full_dashboard(req: Request):
 (function(){
  var qs=new URLSearchParams(location.search); var AS=qs.get('as')?('?as='+qs.get('as')):'';
  function ready(){return (typeof DATA!=='undefined')&&(typeof COM!=='undefined')&&DATA&&DATA.length&&document.getElementById('app')&&document.getElementById('app').style.display!=='none';}
- function applyDelta(d){var n=0;
+ function key3(e){return (e[0]||'')+'|'+(e[2]||'')+'|'+(e[3]||'');}
+ function applyDelta(d){var n=0, meta=d.meta||{}, touched={};
   for(var mid in d.events){ if(!COM[mid])COM[mid]=[];
-   d.events[mid].forEach(function(e){COM[mid].unshift(e);n++;});}
-  if(d.tl&&typeof TL!=='undefined'){for(var m2 in d.tl){ if(!TL[m2])TL[m2]=[]; d.tl[m2].forEach(function(e){TL[m2].unshift(e);n++;});
-     if(typeof memAttr!=='undefined'){var mm={}; TL[m2].forEach(function(ev){(mm[ev[2]]||(mm[ev[2]]=new Set())).add(ev[3]);}); memAttr[m2]=mm;} }}
-  try{ if(typeof recompute==='function')recompute(); if(typeof apply==='function')apply(); }catch(err){console.warn('live-merge recompute:',err);}
+   var seen={}; COM[mid].forEach(function(e){seen[key3(e)]=1;});                 // tuple dedupe: idempotent vs
+   d.events[mid].forEach(function(e){var k=key3(e);                              // baked-in rows, re-runs, and
+    if(!seen[k]){seen[k]=1;COM[mid].unshift(e);n++;}});}                         // historical double-submits
+  if(d.tl&&typeof TL!=='undefined'){for(var m2 in d.tl){ if(!TL[m2])TL[m2]=[];
+   var s2={}; TL[m2].forEach(function(e){s2[key3(e)]=1;});
+   d.tl[m2].forEach(function(e){var k=key3(e); if(!s2[k]){s2[k]=1;TL[m2].unshift(e);n++;}});
+   touched[m2]=1;}}
+  try{
+   if(typeof TL!=='undefined'&&typeof memAttr!=='undefined'){
+    for(var m3 in touched){ var mm={};
+     TL[m3].forEach(function(ev){(mm[ev[2]]||(mm[ev[2]]=new Set())).add(ev[3]);});
+     for(var at in mm){ var mt=meta[at];                                          // latest-wins for radios:
+      if(mt&&mt.single){ var best=null;                                           // the member's CURRENT state,
+       TL[m3].forEach(function(ev){if(ev[2]===at&&(!best||ev[0]>best))best=ev[0];});// not the union of history
+       var got=false, keep=new Set();
+       TL[m3].forEach(function(ev){if(ev[2]===at&&ev[0]===best&&!got){keep.add(ev[3]);got=true;}});
+       mm[at]=keep;}}
+     memAttr[m3]=mm;}
+    if(typeof VCNT!=='undefined'){ VCNT={}; var av={};                            // full count rebuild (init's own
+     for(var m4 in memAttr){ var a4=memAttr[m4];                                  // loop) — fixes stale chip counts
+      for(var at2 in a4){ a4[at2].forEach(function(v){ VCNT[at2+'|'+v]=(VCNT[at2+'|'+v]||0)+1;
+       (av[at2]||(av[at2]=new Set())).add(v);});}}
+     if(typeof FG!=='undefined'){ for(var at3 in av){ var mt3=meta[at3]; if(!mt3)continue;
+      var box=FG[mt3.box]; if(!box)continue;                                      // find-or-create group + facet so
+      var grp=null; box.forEach(function(g){if(g[0]===mt3.grp)grp=g;});           // brand-new live attrs get chips;
+      if(!grp){grp=[mt3.grp,[]];box.push(grp);}                                   // no-op once a regen bakes them in
+      var fac=null; grp[1].forEach(function(f){if(f.name===at3)fac=f;});
+      if(!fac){fac={name:at3,vals:[]};grp[1].push(fac);}
+      av[at3].forEach(function(v){if(fac.vals.indexOf(v)<0)fac.vals.push(v);});}
+      if(typeof renderBox==='function'){renderBox('TREATMENT');renderBox('CONDSYM');} // renderBox binds no handlers
+      if(typeof syncChipStates==='function')syncChipStates();}}}                  // (container-delegated) — never
+  }catch(err){console.warn('live-merge facets:',err);}                            // re-call buildFilters()
+  try{ if(typeof recompute==='function')recompute(); if(typeof buildStats==='function')buildStats(); if(typeof apply==='function')apply(); }catch(err){console.warn('live-merge recompute:',err);}
   console.log('CRM live merge: '+n+' advocate events through '+d.through);}
  function go(){ if(!ready()){setTimeout(go,400);return;}
-  fetch('/api/dir/dashboard_delta'+AS).then(function(r){return r.json();}).then(applyDelta)
+  var since=(typeof APP_DATA_THROUGH!=='undefined')?((AS?'&':'?')+'since='+APP_DATA_THROUGH):'';
+  fetch('/api/dir/dashboard_delta'+AS+since).then(function(r){return r.json();}).then(applyDelta)
   .catch(function(e){console.warn('live delta unavailable:',e);});}
  go();
 })();
@@ -755,25 +846,44 @@ def full_dashboard(req: Request):
 
 @app.get('/api/dir/dashboard_delta')
 def dashboard_delta(req: Request):
-    """Advocate activity since the dashboard payload was built, shaped as dashboard comm events."""
+    """Advocate activity shaped as dashboard comm + clinical-timeline events, plus facet metadata.
+    ?since=YYYY-MM-DD limits replay (inclusive; the shim's tuple-dedupe absorbs boundary overlap
+    and full replays alike, so empty since = full replay is safe)."""
     u = who(req); need(u, 'director'); c = db()
+    since = (req.query_params.get('since') or '')[:10]
     ev = {}
     n = 0
-    for r in c.execute("""SELECT member_id, ts, actor, disposition, note FROM dispositions ORDER BY id"""):
+    q = "SELECT member_id, ts, actor, disposition, note FROM dispositions" + (" WHERE ts>=?" if since else "") + " ORDER BY id"
+    for r in c.execute(q, (since,) if since else ()):
         kind = r['disposition']
         detail = kind + ((' — ' + r['note']) if r['note'] else '')
         e = [r['ts'][:10], 'Advocacy App', 'Note (' + r['actor'].split('@')[0] + ')', detail[:400], '']
         ev.setdefault(r['member_id'], []).append(e)
-    for r in c.execute("""SELECT member_id, date, event_type, detail, cls FROM comm_hist
-        WHERE event_type IN ('Assigned to advocate','Unassigned from advocate') ORDER BY rowid"""):
+        n += 1
+    q = """SELECT member_id, date, event_type, detail, cls FROM comm_hist
+        WHERE event_type IN ('Assigned to advocate','Unassigned from advocate')""" + (" AND date>=?" if since else "") + " ORDER BY rowid"
+    for r in c.execute(q, (since,) if since else ()):
         e = [(r['date'] or '')[:10], 'Advocacy App', r['event_type'], (r['detail'] or '')[:400], r['cls'] or 'O']
         ev.setdefault(r['member_id'], []).append(e)
         n += 1
+    fan_attrs = {v['attr'] for v in CAPTURE_MAP.values() if v['fan']}
     tl = {}
-    for r in c.execute("SELECT member_id, date, event_type, detail FROM comm_hist WHERE event_type LIKE 'Clinical: %' ORDER BY rowid"):
-        tl.setdefault(r['member_id'], []).append([(r['date'] or '')[:10], 'C', r['event_type'][10:], (r['detail'] or '')[:200]])
-    audit(u['email'], 'dashboard_delta', meta={'events': n})
-    return {'through': now(), 'events': ev, 'tl': tl, 'count': n}
+    q = "SELECT member_id, date, event_type, detail FROM comm_hist WHERE event_type LIKE 'Clinical: %'" + (" AND date>=?" if since else "") + " ORDER BY rowid"
+    for r in c.execute(q, (since,) if since else ()):
+        attr = r['event_type'][10:]; det = (r['detail'] or '')[:200]
+        # read-time fan-out of legacy joined check answers ('a; b; c' rows written before per-option events)
+        parts = [p.strip() for p in det.split('; ') if p.strip()] if (attr in fan_attrs and '; ' in det) else [det]
+        for p in parts:
+            tl.setdefault(r['member_id'], []).append([(r['date'] or '')[:10], 'C', attr, p])
+    # facet metadata for the shim: attr -> {box, grp, single} or None (timeline-only). Contact attrs never ship.
+    qt = {(r['stage'], r['seq']): r['qtype'] for r in c.execute("SELECT stage,seq,qtype FROM guide_items WHERE kind='q'")}
+    fmeta = {'Next HCP appointment': None}
+    for k, v in CAPTURE_MAP.items():
+        if v['kind'] == 'K': continue
+        if fmeta.get(v['attr']) is None:   # first grp'd occurrence wins; shared attrs are consistent by construction
+            fmeta[v['attr']] = ({'box': v['grp'][0], 'grp': v['grp'][1], 'single': qt.get(k) == 'radio'} if v['grp'] else None)
+    audit(u['email'], 'dashboard_delta', meta={'events': n, 'since': since or 'all'})
+    return {'through': now(), 'events': ev, 'tl': tl, 'meta': fmeta, 'count': n}
 
 from ui import DIRECTOR_HTML, ADVOCATE_HTML
 
