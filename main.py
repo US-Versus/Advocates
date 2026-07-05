@@ -455,13 +455,16 @@ def export_forms(req: Request):
         return HTMLResponse(page)
     # csv
     import csv, io
+    def nx(s):  # neutralize spreadsheet formula injection in free-text cells (=, +, -, @ prefixes)
+        s='' if s is None else str(s)
+        return ("'"+s) if s[:1] in ('=','+','-','@') else s
     buf=io.StringIO(); wtr=csv.writer(buf,lineterminator='\n')
     wtr.writerow(['member_id','first','last','call_ts','advocate','batch','stage','outcome','handle_secs','q_seq','question','answer'])
     for r in recs:
-        d=r['d']; base=[d['member_id'],d['first'],d['last'],d['ts'],d['actor'],d['batch'] or '',r['stage'],
-                        (d['note'] or '').split(' | ')[0],d['handle_secs'] or '']
+        d=r['d']; base=[d['member_id'],nx(d['first']),nx(d['last']),d['ts'],d['actor'],nx(d['batch'] or ''),r['stage'],
+                        nx((d['note'] or '').split(' | ')[0]),d['handle_secs'] or '']
         if r['answers']:
-            for a in r['answers']: wtr.writerow(base+[a['seq'],a['prompt'],a['answer']])
+            for a in r['answers']: wtr.writerow(base+[a['seq'],nx(a['prompt']),nx(a['answer'])])
         else:
             wtr.writerow(base+['','',''])
     from fastapi import Response
@@ -525,7 +528,8 @@ def _capture_startup():
         have={(r['stage'],r['seq']) for r in c.execute("SELECT stage,seq FROM guide_items WHERE kind='q'")}
         missing=[k for k in CAPTURE_MAP if k not in have]
         if missing: print('WARN: CAPTURE_MAP keys with no matching guide question:', missing)
-        c.execute("CREATE INDEX IF NOT EXISTS ix_ch_et ON comm_hist(event_type, date)"); c.commit()
+        c.execute("CREATE INDEX IF NOT EXISTS ix_ch_et ON comm_hist(event_type, date)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_ans_export ON answers(member_id, batch_id, stage, ts)"); c.commit()
     except Exception as e: print('capture startup check skipped:', e)
 _capture_startup()
 def build_card(c, u, bid, mid):

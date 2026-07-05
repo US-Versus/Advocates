@@ -498,6 +498,7 @@ async function submitGuide(){
  BUSY=true;
  try{
   const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
+  if(r.dup){toast('Already saved — '+r.outcome);return;}   // retry of a recorded submit: no re-advance
   toast('Saved — '+r.outcome);tally();if(RUNNING){RUNI++;stepRun();}else{OPENMID=null;load();}
  }finally{BUSY=false;}}
 async function disp(d){
