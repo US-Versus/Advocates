@@ -382,8 +382,8 @@ function wire(r){const L=$('list');
  L.querySelectorAll('tr.rowx').forEach(tr=>tr.onclick=()=>openRow(tr.dataset.mid));}
 async function openRow(mid){const L=$('list');
  const drow=L.querySelector(`tr[data-d="${mid}"]`);
- if(OPENMID===mid&&drow.style.display!=='none'){drow.style.display='none';OPENMID=null;return;}
- L.querySelectorAll('tr[data-d]').forEach(x=>x.style.display='none');
+ if(OPENMID===mid&&drow.style.display!=='none'){drow.style.display='none';drow.firstElementChild.innerHTML='';OPENMID=null;return;}
+ L.querySelectorAll('tr[data-d]').forEach(x=>{x.style.display='none';x.firstElementChild.innerHTML='';}); // clear, don't just hide — stale hidden cards carry duplicate ids (#card/#note/#guide) that hijack saves
  drow.style.display='';OPENMID=mid;const cell=drow.firstElementChild;cell.innerHTML='<span class="muted">loading…</span>';
  M=await api('/api/adv/open/'+mid);M.call_click_at=null;M.text_click_at=null;
  cell.innerHTML=`<div class="drawer" id="card">
@@ -418,6 +418,7 @@ async function openRow(mid){const L=$('list');
 function prevMember(){const i=LASTROWS.indexOf(M.member_id);if(i>0)openRow(LASTROWS[i-1]);else toast('Top of list');}
 function nextMember(){const i=LASTROWS.indexOf(M.member_id);if(i>=0&&i<LASTROWS.length-1)openRow(LASTROWS[i+1]);else{OPENMID=null;load();toast('End of list');}}
 function savedBanner(outcome){const c=$('card');if(!c)return;
+ c.querySelectorAll('.savedbar').forEach(x=>x.remove());   // one banner per card, latest save wins
  const div=document.createElement('div');div.className='savedbar';
  div.innerHTML=`✔ <b>Saved:</b> ${esc(outcome)} <span style="flex:1"></span><button class="sec" onclick="prevMember()">← previous</button><button class="sec" onclick="OPENMID=null;load()">☰ back to list</button><button class="good" onclick="nextMember()">next member →</button>`;
  c.appendChild(div);div.scrollIntoView({behavior:'smooth',block:'nearest'});}
@@ -527,6 +528,7 @@ async function saveOutcome(){
  if(!sel){toast('Select an outcome first — or open a form above and save it there');return;}
  const d=sel.dataset.o;
  if(d==='Appointment changed'&&!($('newappt')&&$('newappt').value)){toast('Enter the new appointment date first');return;}
+ if(d==='Skipped'&&!($('note')&&$('note').value.trim())){toast('Add a note explaining the skip first');return;}
  const body={member_id:M.member_id,disposition:d,note:$('note')?$('note').value:'',served_at:M.served_at,
   call_click_at:M.call_click_at,text_click_at:M.text_click_at,
   callback_at:($('cbat')&&$('cbat').value)||null,
