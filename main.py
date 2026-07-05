@@ -768,6 +768,13 @@ async def disposition(req: Request):
     if d=='Skipped' and not (f.get('note') or '').strip(): raise HTTPException(400,'skip requires a reason')
     bid, mid = cur['batch_id'], cur['member_id']
     served = f.get('served_at') or now()
+    # idempotence guard (same pattern as guide_submit): an IDENTICAL outcome re-saved from the same
+    # card session (same served_at) is a repeat click — skip it (no duplicate row, no burned stage
+    # attempt, no inflated counts). A DIFFERENT outcome on the same card still records (correction).
+    if c.execute("SELECT 1 FROM dispositions WHERE member_id=? AND batch_id=? AND disposition=? AND served_at=? LIMIT 1",
+                 (mid,bid,d,served)).fetchone():
+        audit(u['email'],'disposition',mid,bid,meta={'disposition':d,'dup':True,'served_at':served})
+        return {'ok':True,'dup':True}
     try: handle = (datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle = None
     cb = f.get('callback_at') if d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized') else None
