@@ -386,7 +386,7 @@ async function openRow(mid){const L=$('list');
   <div class="row" style="margin:12px 0">
    <button class="good callbtn" onclick="go('call')">📞 Call</button>
    <button class="callbtn" style="background:#2563eb" onclick="copyText()">💬 Text</button>
-   <span class="muted" style="font-size:11px">numbers stay hidden — buttons open Google Voice directly · text copies the approved message · every click is logged</span></div>
+   <span class="muted" style="font-size:11px">📞 Call dials in Google Voice — first time, allow voice.google.com to handle "tel" links (Chrome asks once); no new tab after that · every click is logged</span></div>
   <div class="lbl">Call log</div>
   <div class="hist">${(M.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>'}</div>
   <div class="row" style="margin-top:12px"><button class="good" style="font-size:15px;padding:10px 20px" onclick="openGuide()">🟢 Connected — open guide</button>
@@ -451,7 +451,7 @@ async function runCb(){const t=prompt('Callback date & time (YYYY-MM-DD HH:MM):'
 function endRun(done){RUNNING=false;RUNQ=[];if(done)toast('⚡ Rapid dial complete — queue worked');load();}
 async function go(kind){const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind})});
  if(kind==='call')M.call_click_at=r.ts;else M.text_click_at=r.ts;
- window.open(kind==='call'?M.call_url:M.text_url,'gv');}
+ if(kind==='call'){location.href=M.dial||M.call_url;}else{window.open(M.text_url,'gv');}}
 function openGuide(){const g=$('guide');g.style.display='';
  g.innerHTML=`<div class="panel" style="border-color:#16a34a;background:#f7fdf9;margin-top:10px"><div class="lbl">${esc(M.stage_title)} — read scripted lines verbatim, record answers</div>`+
  M.guide.map(it=>{let inner='';

@@ -277,12 +277,15 @@ async def unassign_members(req: Request):
     if not mids: raise HTTPException(400,'no members to unassign')
     rows=[dict(r) for r in c.execute(f"""SELECT bm.batch_id,bm.member_id,b.advocate FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
         WHERE b.status='open' AND bm.state IN('pending','callback') AND bm.member_id IN ({','.join('?'*len(mids))})""",mids)]
+    removed=0
     for r in rows:
-        c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=? AND state IN('pending','callback')",(r['batch_id'],r['member_id']))
-        c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
-            (r['member_id'],now()[:10],'Unassigned from advocate',f'Removed from {r["advocate"]} by {u["display"]}','O'))
-    c.commit(); audit(u['email'],'unassign_members',meta={'removed':len(rows),'requested':len(mids)})
-    return {'removed':len(rows),'requested':len(mids)}
+        cur=c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=? AND state IN('pending','callback')",(r['batch_id'],r['member_id']))
+        if cur.rowcount:
+            removed+=1
+            c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+                (r['member_id'],now()[:10],'Unassigned from advocate',f'Removed from {r["advocate"]} by {u["display"]}','O'))
+    c.commit(); audit(u['email'],'unassign_members',meta={'removed':removed,'requested':len(mids)})
+    return {'removed':removed,'requested':len(mids)}
 
 @app.post('/api/dir/import_batch')
 async def import_batch(req: Request):
@@ -425,8 +428,8 @@ def build_card(c, u, bid, mid):
     text = 'https://voice.google.com/u/0/messages?itemId=t.' + urllib.parse.quote(num)
     body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
     sms=SMS_TEMPLATES.get(stage,SMS_TEMPLATES['initial']).replace('{first}',m['first']).replace('{advocate}',u['display'])
-    d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left, sms_text=sms,
-             call_url=call, text_url=text, served_at=now(),
+    d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left, sms_text=(sms if SMS_ENABLED else ''),
+             call_url=call, text_url=(text if SMS_ENABLED else ''), dial='tel:'+num, served_at=now(),
              stage=stage, hcp_date=bm['hcp_date'], stage_attempt=(bm['stage_attempts'] or 0)+1, max_attempts=MAX_STAGE_ATTEMPTS,
              stage_title=(sc['title'] if sc else stage), stage_script=body, guide=qs,
              hist=[dict(h) for h in hist])
@@ -513,6 +516,7 @@ async def click(req: Request):
     u=who(req); need(u,'advocate'); f=await req.json(); c=db()
     sc = adv_scope(c, u['email'], f.get('member_id') or '')
     if not sc: raise HTTPException(403,'not in your assigned pool')
+    if f.get('kind')=='text' and not SMS_ENABLED: raise HTTPException(403,'texting disabled for the pilot')
     audit(u['email'], 'click_'+('call' if f.get('kind')=='call' else 'text'), sc['member_id'], sc['batch_id'])
     return {'ok': True, 'ts': now()}
 
@@ -520,6 +524,7 @@ STAGE_NEXT = {'initial':'pre_hcp','pre_hcp':'post_hcp','post_hcp':'complete'}
 PRE_WINDOW_DAYS, POST_DELAY_DAYS = 10, 28   # pre window opens HCP-10d; post opens HCP+4wks
 MAX_STAGE_ATTEMPTS, POST_RETRY_DAYS = 3, 3   # ≤3 serves per window; post retries 3 days apart
 INITIAL_RETRY_DAYS = 3                        # initial no-connect retries 3 days apart, ≤3 attempts then retire
+SMS_ENABLED = False  # pilot: texting OFF server-side until PRC/MLR-approved copy
 SMS_TEMPLATES = {  # PLACEHOLDER operational texts (opt-out included) — replace with PRC/MLR-approved copy before use
  'initial':"Hi {first}, this is {advocate} with Parkinson's Community. I tried reaching you by phone about the information you requested. When's a good time to talk? Reply STOP to opt out.",
  'pre_hcp':"Hi {first}, {advocate} from Parkinson's Community. Following up before your upcoming doctor's appointment — I'd like to help you prepare. When can we talk? Reply STOP to opt out.",
@@ -626,6 +631,7 @@ async def disposition(req: Request):
     try: handle = (datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle = None
     cb = f.get('callback_at') if d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized') else None
+    if d=='Connected — Callback Scheduled' and not cb: raise HTTPException(400,'Callback Scheduled requires a valid date/time')
     if cb and d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized'):
         try:
             cbdt=datetime.datetime.fromisoformat(str(cb))
