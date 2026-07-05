@@ -278,7 +278,7 @@ async def unassign_members(req: Request):
     rows=[dict(r) for r in c.execute(f"""SELECT bm.batch_id,bm.member_id,b.advocate FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
         WHERE b.status='open' AND bm.state IN('pending','callback') AND bm.member_id IN ({','.join('?'*len(mids))})""",mids)]
     for r in rows:
-        c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=?",(r['batch_id'],r['member_id']))
+        c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=? AND state IN('pending','callback')",(r['batch_id'],r['member_id']))
         c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
             (r['member_id'],now()[:10],'Unassigned from advocate',f'Removed from {r["advocate"]} by {u["display"]}','O'))
     c.commit(); audit(u['email'],'unassign_members',meta={'removed':len(rows),'requested':len(mids)})
@@ -470,7 +470,7 @@ def adv_open(mid: str, req: Request):
     u=who(req); need(u,'advocate'); c=db()
     sc=adv_scope(c,u['email'],mid)
     if not sc: raise HTTPException(403,'not in your assigned pool')
-    if sc['state']=='pending':
+    if sc['state'] in ('pending','callback'):
         c.execute("UPDATE batch_members SET state='served' WHERE batch_id=? AND member_id=?",(sc['batch_id'],mid)); c.commit()
     audit(u['email'],'open',mid,sc['batch_id'])
     return build_card(c,u,sc['batch_id'],mid)
@@ -626,7 +626,7 @@ async def disposition(req: Request):
     try: handle = (datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle = None
     cb = f.get('callback_at') if d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized') else None
-    if d=='Connected — Callback Scheduled':
+    if cb and d in ('Connected — Callback Scheduled','Reached someone else','Health event / hospitalized'):
         try:
             cbdt=datetime.datetime.fromisoformat(str(cb))
             # 24h grace on the lower bound: advocate enters a local wall-clock time while the server

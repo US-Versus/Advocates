@@ -339,6 +339,7 @@ ADVOCATE_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name=
 </div><div class="toast" id="toast"></div>
 <script>__JSC__
 let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[],RUNQ=[],RUNI=0,RUNNING=false;
+const SMS_ENABLED=false; // PILOT: Text disabled until PRC/MLR-approved copy + working GV deep-link
 const VIEWS=[['due','⏰ Due now'],['queue','📋 To call'],['callbacks','📅 Callbacks set'],['done','✅ Done today']];
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
@@ -407,7 +408,7 @@ async function switchStage(s){const g=await api('/api/adv/guide/'+M.member_id+(A
  const gd=$('guide');if(gd&&gd.style.display!=='none')openGuide();
  toast('Guide switched to '+g.stage_title.split('(')[0]);}
 document.addEventListener('click',e=>{const b=e.target.closest('#stageSeg [data-st]');if(b)switchStage(b.dataset.st);});
-async function copyText(){const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind:'text'})});M.text_click_at=r.ts;
+async function copyText(){if(!SMS_ENABLED){toast('💬 Texting is off for the pilot — use Call');return;}const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind:'text'})});M.text_click_at=r.ts;
  try{await navigator.clipboard.writeText(M.sms_text||'');}catch(e){}
  window.open(M.text_url,'gv');toast('Approved text copied — paste (Ctrl+V) & send in Google Voice');}
 function histHtml(x){return (x.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,90))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>';}
