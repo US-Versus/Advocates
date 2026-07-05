@@ -51,7 +51,7 @@ Open the app → you land on the Director console (your email was seeded as dire
 | See member emails | ✗ (not in app.db at all) | ✗ |
 | Browse/search all members | full audited browser + population pie + preview (all director reads logged) | ✗ — only their assigned pool, 15 rows/page |
 | See phone numbers | ✗ (masked to last 4) | last-4 only; full number only inside the GV link |
-| Export | tiers/DNC CSVs | ✗ nothing |
+| Export | tiers/DNC CSVs + completed-guide forms (CSV / printable packet, every export audited) | ✗ nothing |
 | Call/text | — | assigned card only; buttons exist only on the served card |
 | Assign/close batches, add users | ✓ | ✗ |
 | Audit trail | every serve/click/disposition, IP-stamped by Cloud Run logs | own tally only |

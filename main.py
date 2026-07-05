@@ -401,6 +401,74 @@ def get_audit(req: Request):
     u=who(req); need(u,'director')
     return [dict(r) for r in db().execute("SELECT * FROM activity ORDER BY id DESC LIMIT 300")]
 
+def _export_records(c, date_from, date_to):
+    """One record per completed guide call: the guide-completed disposition + its answers,
+    joined by the [served_at, ts+1s] window (no schema needed; the idempotence guard keeps
+    windows unambiguous going forward; legacy same-day duplicates collapse into one record)."""
+    w=["d.disposition LIKE 'Connected — Guide completed%'"]; p=[]
+    if date_from: w.append("date(d.ts)>=?"); p.append(date_from)
+    if date_to:   w.append("date(d.ts)<=?"); p.append(date_to)
+    disps=c.execute(f"""SELECT d.id,d.ts,d.actor,d.member_id,d.batch_id,d.disposition,d.note,d.served_at,d.handle_secs,
+        m.first,m.last,b.name batch FROM dispositions d JOIN member_core m USING(member_id)
+        LEFT JOIN batches b ON b.id=d.batch_id WHERE {' AND '.join(w)} ORDER BY d.ts""",p).fetchall()
+    out=[]
+    for d in disps:
+        stage=(re.search(r'\((\w+)\)$',d['disposition']) or [None,'?'])[1]
+        lo=d['served_at'] or (d['ts'][:10])                       # fallback: whole day
+        hi=d['ts'][:19]+'~'                                       # '~' > any digit -> +1s-ish inclusive bound
+        ans=c.execute("""SELECT a.prompt,a.answer,COALESCE(g.seq,999) seq FROM answers a
+            LEFT JOIN guide_items g ON g.id=a.question_id
+            WHERE a.member_id=? AND a.batch_id=? AND a.stage=? AND a.ts>=? AND a.ts<=?
+            ORDER BY seq,a.id""",(d['member_id'],d['batch_id'],stage,lo,hi)).fetchall()
+        out.append({'d':d,'stage':stage,'answers':ans})
+    return out
+
+@app.get('/api/dir/export_forms')
+def export_forms(req: Request):
+    """Proof-of-work export: per-member completed guide (Member ID · date · advocate · every Q→A).
+    fmt=csv -> download; fmt=html -> printable packet (one form per page, print to PDF)."""
+    u=who(req); need(u,'director'); c=db()
+    qp=req.query_params
+    fmt=(qp.get('fmt') or 'csv').lower()
+    f_, t_ = (qp.get('from') or '')[:10], (qp.get('to') or '')[:10]
+    recs=_export_records(c,f_,t_)
+    audit(u['email'],'export_forms',meta={'fmt':fmt,'from':f_ or 'all','to':t_ or 'all','forms':len(recs)})
+    if fmt=='html':
+        import html as H
+        e=H.escape
+        forms=[]
+        for r in recs:
+            d=r['d']
+            rows=''.join(f"<tr><td class='q'>{e(a['prompt'])}</td><td class='a'>{e(a['answer'])}</td></tr>" for a in r['answers'])
+            forms.append(f"""<div class="form"><h2>{e(d['first'])} {e(d['last'])} <span class="mid">{e(d['member_id'])}</span></h2>
+<div class="meta">{e(d['ts'][:16].replace('T',' '))} · advocate: {e(d['actor'])} · batch: {e(d['batch'] or '—')} · stage: <b>{e(r['stage'])}</b>
+ · outcome: {e((d['note'] or '').split(' | ')[0])}{f" · handle: {int(d['handle_secs'])}s" if d['handle_secs'] else ''}</div>
+<table><tr><th>Question</th><th>Answer</th></tr>{rows or '<tr><td colspan=2>(no recorded answers found)</td></tr>'}</table></div>""")
+        page=("<!doctype html><html><head><meta charset='utf-8'><title>Advocacy call forms</title><style>"
+              "body{font:13px system-ui,sans-serif;margin:24px;color:#111}"
+              ".form{page-break-after:always;margin-bottom:28px}h2{margin:0 0 2px}.mid{color:#666;font-size:13px;font-weight:400}"
+              ".meta{color:#444;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse}"
+              "td,th{border:1px solid #ccc;padding:5px 8px;vertical-align:top;text-align:left;font-size:12px}"
+              ".q{width:55%}.a{font-weight:600}@media print{.noprint{display:none}}"
+              f"</style></head><body><div class='noprint' style='margin-bottom:14px'><b>{len(recs)} completed guide call(s)</b>"
+              " — Ctrl+P to print / save as PDF</div>"+''.join(forms)+"</body></html>")
+        return HTMLResponse(page)
+    # csv
+    import csv, io
+    buf=io.StringIO(); wtr=csv.writer(buf,lineterminator='\n')
+    wtr.writerow(['member_id','first','last','call_ts','advocate','batch','stage','outcome','handle_secs','q_seq','question','answer'])
+    for r in recs:
+        d=r['d']; base=[d['member_id'],d['first'],d['last'],d['ts'],d['actor'],d['batch'] or '',r['stage'],
+                        (d['note'] or '').split(' | ')[0],d['handle_secs'] or '']
+        if r['answers']:
+            for a in r['answers']: wtr.writerow(base+[a['seq'],a['prompt'],a['answer']])
+        else:
+            wtr.writerow(base+['','',''])
+    from fastapi import Response
+    fname=f"advocacy_forms_{f_ or 'start'}_{t_ or 'now'}.csv"
+    return Response(buf.getvalue(),media_type='text/csv',
+        headers={'Content-Disposition':f'attachment; filename="{fname}"'})
+
 # ---------------- advocate API ----------------
 def current_card(c, email):
     return c.execute("""SELECT bm.batch_id,bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id
@@ -597,13 +665,16 @@ async def guide_submit(req: Request):
     override=f.get('stage')
     if override in ('initial','pre_hcp','post_hcp') and override!=stage:
         stage=override   # advocate corrected the call type (appt happened earlier / hasn't happened yet)
-    # idempotence guard — BEFORE any insert: a double-click or network retry of the same guide on the
-    # same day returns the prior outcome and writes nothing (answers/clinical rows/disposition all skip).
+    # idempotence guard — BEFORE any insert. Keyed on served_at (the card-session identity): a
+    # double-click or network retry re-posts the SAME served_at and is swallowed; a genuinely new
+    # conversation re-opens the card (fresh served_at from build_card) and records normally —
+    # including legit same-day same-stage repeats (stage switcher, same-day re-scheduled pre-HCP).
+    served=f.get('served_at') or now()
     prev=c.execute("""SELECT note FROM dispositions WHERE member_id=? AND batch_id=? AND disposition=?
-        AND date(ts)=date('now','localtime') ORDER BY id DESC LIMIT 1""",
-        (mid,bid,'Connected — Guide completed ('+stage+')')).fetchone()
+        AND served_at=? ORDER BY id DESC LIMIT 1""",
+        (mid,bid,'Connected — Guide completed ('+stage+')',served)).fetchone()
     if prev:
-        audit(u['email'],'guide_submit',mid,bid,meta={'stage':stage,'dup':True})
+        audit(u['email'],'guide_submit',mid,bid,meta={'stage':stage,'dup':True,'served_at':served})
         return {'ok':True,'dup':True,'outcome':(prev['note'] or '').split(' | ')[0]}
     hcp=None; dq=False; lines=[]; call_doctor_yes=False
     for a in (f.get('answers') or []):
@@ -630,7 +701,6 @@ async def guide_submit(req: Request):
             except ValueError: pass  # invalid calendar date -> ignore, advocate can re-ask
         if it['dq_vals'] and it['dq_vals'] in val: dq=True
         if stage=='post_hcp' and it['seq']==5 and val=='Yes': call_doctor_yes=True
-    served=f.get('served_at') or now()
     try: handle=(datetime.datetime.fromisoformat(now())-datetime.datetime.fromisoformat(served)).total_seconds()
     except: handle=None
     today=datetime.date.today()
@@ -836,6 +906,8 @@ def full_dashboard(req: Request):
   try{ if(typeof recompute==='function')recompute(); if(typeof buildStats==='function')buildStats(); if(typeof apply==='function')apply(); }catch(err){console.warn('live-merge recompute:',err);}
   console.log('CRM live merge: '+n+' advocate events through '+d.through);}
  function go(){ if(!ready()){setTimeout(go,400);return;}
+  // APP_DATA_THROUGH is a forward-compat hook: gen_final18 will bake it (= app->master export
+  // cutoff). Until then it is undefined -> full replay, which the tuple dedupe makes safe.
   var since=(typeof APP_DATA_THROUGH!=='undefined')?((AS?'&':'?')+'since='+APP_DATA_THROUGH):'';
   fetch('/api/dir/dashboard_delta'+AS+since).then(function(r){return r.json();}).then(applyDelta)
   .catch(function(e){console.warn('live delta unavailable:',e);});}
@@ -857,7 +929,9 @@ def dashboard_delta(req: Request):
     for r in c.execute(q, (since,) if since else ()):
         kind = r['disposition']
         detail = kind + ((' — ' + r['note']) if r['note'] else '')
-        e = [r['ts'][:10], 'Advocacy App', 'Note (' + r['actor'].split('@')[0] + ')', detail[:400], '']
+        # HH:MM suffix makes same-day repeat calls distinct tuples for the shim dedupe
+        # (true replays of the same row stay identical), and shows the director the call time
+        e = [r['ts'][:10], 'Advocacy App', 'Note (' + r['actor'].split('@')[0] + ')', detail[:400] + ' · ' + r['ts'][11:16], '']
         ev.setdefault(r['member_id'], []).append(e)
         n += 1
     q = """SELECT member_id, date, event_type, detail, cls FROM comm_hist
@@ -866,15 +940,23 @@ def dashboard_delta(req: Request):
         e = [(r['date'] or '')[:10], 'Advocacy App', r['event_type'], (r['detail'] or '')[:400], r['cls'] or 'O']
         ev.setdefault(r['member_id'], []).append(e)
         n += 1
-    fan_attrs = {v['attr'] for v in CAPTURE_MAP.values() if v['fan']}
+    # live options per fan attr — legacy joined rows are split on the FULL detail and each piece
+    # exact-matched against the options, so [:500]-era truncation fragments never become chips
+    fan_opts = {}
+    for k, v in CAPTURE_MAP.items():
+        if v['fan']:
+            r0 = c.execute("SELECT options FROM guide_items WHERE stage=? AND seq=?", k).fetchone()
+            if r0 and r0['options']: fan_opts.setdefault(v['attr'], set()).update(r0['options'].split('|'))
     tl = {}
     q = "SELECT member_id, date, event_type, detail FROM comm_hist WHERE event_type LIKE 'Clinical: %'" + (" AND date>=?" if since else "") + " ORDER BY rowid"
     for r in c.execute(q, (since,) if since else ()):
-        attr = r['event_type'][10:]; det = (r['detail'] or '')[:200]
-        # read-time fan-out of legacy joined check answers ('a; b; c' rows written before per-option events)
-        parts = [p.strip() for p in det.split('; ') if p.strip()] if (attr in fan_attrs and '; ' in det) else [det]
+        attr = r['event_type'][10:]; det = (r['detail'] or '')
+        if attr in fan_opts and '; ' in det:
+            parts = [p.strip() for p in det.split('; ') if p.strip() in fan_opts[attr]] or [det[:200]]
+        else:
+            parts = [det[:200]]
         for p in parts:
-            tl.setdefault(r['member_id'], []).append([(r['date'] or '')[:10], 'C', attr, p])
+            tl.setdefault(r['member_id'], []).append([(r['date'] or '')[:10], 'C', attr, p[:200]])
     # facet metadata for the shim: attr -> {box, grp, single} or None (timeline-only). Contact attrs never ship.
     qt = {(r['stage'], r['seq']): r['qtype'] for r in c.execute("SELECT stage,seq,qtype FROM guide_items WHERE kind='q'")}
     fmeta = {'Next HCP appointment': None}

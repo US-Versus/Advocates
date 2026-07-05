@@ -214,6 +214,8 @@ async function addUser(){await api('/api/dir/user',{method:'POST',body:JSON.stri
 async function loadStats(){const s=await api('/api/dir/stats');
  $('stats').innerHTML=[['Ready to call',s.eligible-s.in_batch],['In open batches',s.in_batch],['Worked today',s.worked_today],['Connected today',s.connected_today],['Callbacks due now',s.callbacks_due]]
  .map(x=>`<div class="stat"><div class="n">${(+x[1]).toLocaleString()}</div><div class="l">${x[0]}</div></div>`).join('');}
+function exportForms(fmt){const f=$('xfrom')?$('xfrom').value:'',t=$('xto')?$('xto').value:'';
+ window.open('/api/dir/export_forms'+(AS?AS+'&':'?')+'fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:''),'_blank');}
 async function loadUsers(){const us=await api('/api/dir/users');
  $('badv').innerHTML=us.filter(x=>x.role==='advocate'&&x.active).map(x=>`<option value="${x.email}">${esc(x.display)}</option>`).join('')||'<option value="">— no advocates yet: add one below —</option>';
  return us;}
@@ -280,7 +282,12 @@ async function openTab(k){document.querySelectorAll('.tab').forEach(x=>x.classLi
   const stages=['initial','pre_hcp','post_hcp','complete','missed_post','no_appt','dq'];
   B.innerHTML='<table><tr><th>Stage</th><th>Pending</th><th>Callback set</th><th>Done</th></tr>'+stages.map(sg=>{const x=st[sg]||{};return `<tr><td><b>${sg.replace('_',' ')}</b></td><td>${x.pending||0}</td><td>${x.callback||0}</td><td>${x.done||0}</td></tr>`}).join('')+'</table>';}
  else if(k==='answers'){const a=await api('/api/dir/answers');
-  B.innerHTML=a.length?'<div style="max-height:340px;overflow-y:auto"><table>'+a.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.stage}</td><td>${esc(x.prompt.slice(0,60))}</td><td><b>${esc(x.answer)}</b></td></tr>`).join('')+'</table></div>':'<span class="muted">Discussion-guide answers appear here the moment an advocate saves a connected call.</span>';}
+  const tools='<div class="row" style="margin-bottom:8px"><span class="lbl" style="min-width:auto">Export forms</span>'+
+   '<input type="date" id="xfrom" title="from"><input type="date" id="xto" title="to">'+
+   '<button class="sec" onclick="exportForms(\'csv\')">⬇ CSV</button>'+
+   '<button class="sec" onclick="exportForms(\'html\')">🖨 Printable</button>'+
+   '<span class="muted" style="font-size:11px">one record per completed guide call — proof of work (exports are audited)</span></div>';
+  B.innerHTML=tools+(a.length?'<div style="max-height:340px;overflow-y:auto"><table>'+a.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.stage}</td><td>${esc(x.prompt.slice(0,60))}</td><td><b>${esc(x.answer)}</b></td></tr>`).join('')+'</table></div>':'<span class="muted">Discussion-guide answers appear here the moment an advocate saves a connected call.</span>');}
  else if(k==='scripts'){const S=await api('/api/dir/scripts');window._SCR=S;
   B.innerHTML='<p class="muted">These are the PRC/MLR-approved texts advocates read and record on connected calls. Edit carefully — wording is compliance-approved.</p>'+
   S.scripts.map(sc=>`<div class="row"><span class="lbl">${sc.stage}</span><input data-st="${sc.stage}" data-f="title" value="${escA(sc.title)}" style="flex:1"></div>
@@ -445,12 +452,16 @@ async function runDisp(d,note){if(BUSY)return;const nb=$('note');const n=note||(
  BUSY=true;
  try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:d,note:n,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});toast(d+' logged — next');RUNI++;tally();stepRun();}
  finally{BUSY=false;}}
-async function runAppt(){const t=prompt('New appointment date (YYYY-MM-DD):');if(!t)return;
+async function runAppt(){if(BUSY)return;const t=prompt('New appointment date (YYYY-MM-DD):');if(!t)return;
+ BUSY=true;
  try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:'Appointment changed',hcp_date:t.slice(0,10),note:($('note')?$('note').value:''),served_at:M.served_at,call_click_at:M.call_click_at})});toast('Appt updated — cadence re-timed');RUNI++;tally();stepRun();}
- catch(e){toast('Enter a valid date YYYY-MM-DD')}}
-async function runCb(){const t=prompt('Callback date & time (YYYY-MM-DD HH:MM):');if(!t)return;
+ catch(e){toast('Enter a valid date YYYY-MM-DD')}
+ finally{BUSY=false;}}
+async function runCb(){if(BUSY)return;const t=prompt('Callback date & time (YYYY-MM-DD HH:MM):');if(!t)return;
+ BUSY=true;
  try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:'Connected — Callback Scheduled',callback_at:t.replace(' ','T'),served_at:M.served_at,call_click_at:M.call_click_at})});RUNI++;tally();stepRun();}
- catch(e){toast('Enter a valid future date/time');}}
+ catch(e){toast('Enter a valid future date/time');}
+ finally{BUSY=false;}}
 function endRun(done){RUNNING=false;RUNQ=[];if(done)toast('⚡ Rapid dial complete — queue worked');load();}
 async function go(kind){const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind})});
  if(kind==='call')M.call_click_at=r.ts;else M.text_click_at=r.ts;
