@@ -26,7 +26,7 @@ One tokenized stylesheet (`CSS` constant in `ui.py`) drives both the Director co
 
 1. **Emoji as affordance:** meaningful emoji (📞 💬 ⚡ 🟢 🕊) are kept as an intentional friendly-voice choice, marked decorative where icon-only. Swap to an SVG icon set if brand requires; the tokens are ready.
 2. **Tap target 40 vs 44:** dense desktop utility controls (chips, segmented buttons, tabs) sit at 34–40px for information density; primary CTAs are ≥44. Revisit if the advocate app is used primarily on touch tablets.
-3. **SMS templates** in `main.py` `SMS_TEMPLATES` are operational placeholders — replace with PRC/MLR-approved copy before sending; make director-editable in the Scripts tab.
+3. **SMS templates** in `main.py` `SMS_TEMPLATES` are unbranded outreach texts (opt-out included) — no MLR/PRC required per program owner; director-editable.
 4. **Click-to-email** deferred (needs Gmail-API send to keep addresses hidden).
 
 ## Not-yet-wired / status

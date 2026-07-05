@@ -413,6 +413,10 @@ def adv_scope(c, email, mid):
         WHERE b.advocate=? AND b.status='open' AND bm.member_id=? AND bm.state IN('pending','served','callback')
         ORDER BY bm.batch_id DESC LIMIT 1""",(email,mid)).fetchone()
 
+CLINICAL_MAP = {  # guide (stage,seq) -> clinical-timeline attribute; advocate answers become timeline events + filter facets
+ ('initial',7):'OFF disruptive confirmed', ('initial',9):'OFF symptoms', ('initial',10):'OFF status',
+ ('initial',13):'On oral levodopa', ('post_hcp',2):'OFF status (post-HCP)', ('post_hcp',3):'Treatment change after HCP',
+}
 def build_card(c, u, bid, mid):
     m = c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
     hist = c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? LIMIT 15",(mid,)).fetchall()
@@ -423,13 +427,13 @@ def build_card(c, u, bid, mid):
     qs = [dict(q) for q in c.execute("SELECT id,seq,kind,text,qtype,options,show_qid,show_vals,dq_vals,sched FROM guide_items WHERE stage=? ORDER BY seq",(stage,))]
     left = c.execute("SELECT COUNT(*) n FROM batch_members WHERE batch_id=? AND state='pending'",(bid,)).fetchone()['n']
     d = dict(m)
-    num = d.pop('phone')                      # masked in UI; full number travels only inside the GV deep links
+    num = d.pop('phone')                      # masked in UI; full number travels only in call_url + phone_e164 (the Text copy-paste source)
     call = 'https://voice.google.com/u/0/calls?a=nc,' + urllib.parse.quote(num)
-    text = 'https://voice.google.com/u/0/messages?itemId=t.' + urllib.parse.quote(num)
     body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
     sms=SMS_TEMPLATES.get(stage,SMS_TEMPLATES['initial']).replace('{first}',m['first']).replace('{advocate}',u['display'])
     d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left, sms_text=(sms if SMS_ENABLED else ''),
-             call_url=call, text_url=(('https://voice.google.com/u/0/messages?itemId=t.'+urllib.parse.quote(num)) if SMS_ENABLED else ''), dial='tel:'+num, served_at=now(),
+             call_url=call, text_url=('https://voice.google.com/u/0/messages' if SMS_ENABLED else ''),  # GV has no compose-to-number URL; advocate pastes the copied number
+             phone_e164=(num if SMS_ENABLED else ''), served_at=now(),
              stage=stage, hcp_date=bm['hcp_date'], stage_attempt=(bm['stage_attempts'] or 0)+1, max_attempts=MAX_STAGE_ATTEMPTS,
              stage_title=(sc['title'] if sc else stage), stage_script=body, guide=qs,
              hist=[dict(h) for h in hist])
@@ -559,6 +563,8 @@ async def guide_submit(req: Request):
         c.execute("INSERT INTO answers(ts,actor,member_id,batch_id,stage,question_id,prompt,answer) VALUES(?,?,?,?,?,?,?,?)",
             (now(),u['email'],mid,bid,stage,it['id'],it['text'][:200],val))
         lines.append(f"{it['text'][:60]} -> {val}")
+        _cattr=('Next HCP appointment' if it['sched']=='hcp' else CLINICAL_MAP.get((stage,it['seq'])))
+        if _cattr: c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",(mid,now()[:10],'Clinical: '+_cattr,val,'M'))
         if it['sched']=='hcp':
             try: hcp=datetime.date.fromisoformat(val[:10]).isoformat()
             except ValueError: pass  # invalid calendar date -> ignore, advocate can re-ask
@@ -735,6 +741,8 @@ def full_dashboard(req: Request):
  function applyDelta(d){var n=0;
   for(var mid in d.events){ if(!COM[mid])COM[mid]=[];
    d.events[mid].forEach(function(e){COM[mid].unshift(e);n++;});}
+  if(d.tl&&typeof TL!=='undefined'){for(var m2 in d.tl){ if(!TL[m2])TL[m2]=[]; d.tl[m2].forEach(function(e){TL[m2].unshift(e);n++;});
+     if(typeof memAttr!=='undefined'){var mm={}; TL[m2].forEach(function(ev){(mm[ev[2]]||(mm[ev[2]]=new Set())).add(ev[3]);}); memAttr[m2]=mm;} }}
   try{ if(typeof recompute==='function')recompute(); if(typeof apply==='function')apply(); }catch(err){console.warn('live-merge recompute:',err);}
   console.log('CRM live merge: '+n+' advocate events through '+d.through);}
  function go(){ if(!ready()){setTimeout(go,400);return;}
@@ -761,8 +769,11 @@ def dashboard_delta(req: Request):
         e = [(r['date'] or '')[:10], 'Advocacy App', r['event_type'], (r['detail'] or '')[:400], r['cls'] or 'O']
         ev.setdefault(r['member_id'], []).append(e)
         n += 1
+    tl = {}
+    for r in c.execute("SELECT member_id, date, event_type, detail FROM comm_hist WHERE event_type LIKE 'Clinical: %' ORDER BY rowid"):
+        tl.setdefault(r['member_id'], []).append([(r['date'] or '')[:10], 'C', r['event_type'][10:], (r['detail'] or '')[:200]])
     audit(u['email'], 'dashboard_delta', meta={'events': n})
-    return {'through': now(), 'events': ev, 'count': n}
+    return {'through': now(), 'events': ev, 'tl': tl, 'count': n}
 
 from ui import DIRECTOR_HTML, ADVOCATE_HTML
 
