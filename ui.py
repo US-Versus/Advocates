@@ -386,8 +386,7 @@ async function openRow(mid){const L=$('list');
   <div class="row" style="margin:12px 0">
    <button class="good callbtn" onclick="go('call')">📞 Call</button>
    <button class="callbtn" style="background:#2563eb" onclick="copyText()">💬 Text</button>
-   <button class="callbtn" style="background:#0891b2" onclick="copyMsg()">📋 Message</button>
-   <span class="muted" style="font-size:11px">Google Voice opens in a side window · 💬 copies the number → paste in To · 📋 copies the message → paste &amp; send · every click is logged</span></div>
+   <span class="muted" style="font-size:11px">Google Voice opens in a side window · 💬 copies the number → paste it in the To field · every click is logged</span></div>
   <div class="lbl">Call log</div>
   <div class="hist">${(M.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>'}</div>
   <div class="row" style="margin-top:12px"><button class="good" style="font-size:15px;padding:10px 20px" onclick="openGuide()">🟢 Connected — open guide</button>
@@ -412,8 +411,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('#stageSeg [data-
 function gvOpen(url){window.open(url,'gv','popup,width=520,height=760,left='+Math.max(0,(screen.availWidth||1280)-540)+',top=40');}
 async function copyText(){if(!SMS_ENABLED){toast('💬 Texting is off for now — use Call');return;}const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind:'text'})});M.text_click_at=r.ts;
  try{await navigator.clipboard.writeText(M.phone_e164||'');}catch(e){}
- gvOpen(M.text_url);toast('📋 Number copied — paste in the To field, then hit 📋 Message');}
-async function copyMsg(){try{await navigator.clipboard.writeText(M.sms_text||'');}catch(e){} toast('Message copied — paste and send');}
+ gvOpen(M.text_url);toast('📋 Number copied — paste it in the Google Voice To field');}
 function histHtml(x){return (x.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,90))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>';}
 async function startRun(){if(!LASTROWS.length){toast('Nothing to dial');return;}RUNQ=LASTROWS.slice(0,5);RUNI=0;RUNNING=true;await stepRun();}
 async function stepRun(){if(RUNI>=RUNQ.length){return endRun(true);}
@@ -425,8 +423,7 @@ async function stepRun(){if(RUNI>=RUNQ.length){return endRun(true);}
   <div class="row" style="margin:12px 0">
    <button class="good callbtn" onclick="go('call')">📞 Call</button>
    <button class="callbtn" style="background:#2563eb" onclick="copyText()">📱 Text</button>
-   <button class="callbtn" style="background:#0891b2" onclick="copyMsg()">📋 Message</button>
-   <span class="muted" style="font-size:11px">tap Call → talk or leave a message → tap the outcome below · 📱 copies the number, 📋 copies the message</span></div>
+   <span class="muted" style="font-size:11px">tap Call → talk or leave a message → tap the outcome below · 📱 copies the number for the To field</span></div>
   <div class="lbl">Call log</div><div class="hist">${histHtml(M)}</div>
   <div class="lbl" style="margin-top:10px">Note <span class="muted" style="text-transform:none;font-weight:400">— always saved</span></div>
   <textarea id="note" placeholder="what happened…" style="width:100%;height:40px"></textarea>
