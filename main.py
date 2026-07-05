@@ -429,7 +429,7 @@ def build_card(c, u, bid, mid):
     body=(sc['body'] if sc else '').replace('{first}',m['first']).replace('{hcp_date}',bm['hcp_date'] or 'your upcoming date').replace('{advocate}',u['display'])
     sms=SMS_TEMPLATES.get(stage,SMS_TEMPLATES['initial']).replace('{first}',m['first']).replace('{advocate}',u['display'])
     d.update(batch_id=bid, batch=b['name'], script=b['script_hint'], remaining=left, sms_text=(sms if SMS_ENABLED else ''),
-             call_url=call, text_url=(text if SMS_ENABLED else ''), dial='tel:'+num, served_at=now(),
+             call_url=call, text_url=(('https://voice.google.com/u/0/messages?itemId=t.'+urllib.parse.quote(num)) if SMS_ENABLED else ''), dial='tel:'+num, served_at=now(),
              stage=stage, hcp_date=bm['hcp_date'], stage_attempt=(bm['stage_attempts'] or 0)+1, max_attempts=MAX_STAGE_ATTEMPTS,
              stage_title=(sc['title'] if sc else stage), stage_script=body, guide=qs,
              hist=[dict(h) for h in hist])
@@ -524,8 +524,8 @@ STAGE_NEXT = {'initial':'pre_hcp','pre_hcp':'post_hcp','post_hcp':'complete'}
 PRE_WINDOW_DAYS, POST_DELAY_DAYS = 10, 28   # pre window opens HCP-10d; post opens HCP+4wks
 MAX_STAGE_ATTEMPTS, POST_RETRY_DAYS = 3, 3   # ≤3 serves per window; post retries 3 days apart
 INITIAL_RETRY_DAYS = 3                        # initial no-connect retries 3 days apart, ≤3 attempts then retire
-SMS_ENABLED = False  # pilot: texting OFF server-side until PRC/MLR-approved copy
-SMS_TEMPLATES = {  # PLACEHOLDER operational texts (opt-out included) — replace with PRC/MLR-approved copy before use
+SMS_ENABLED = True  # texting ON — unbranded outreach texts (opt-out included), no MLR/PRC required per program owner
+SMS_TEMPLATES = {  # unbranded outreach texts (opt-out included) — NON-branded, no MLR/PRC required; director-editable copy
  'initial':"Hi {first}, this is {advocate} with Parkinson's Community. I tried reaching you by phone about the information you requested. When's a good time to talk? Reply STOP to opt out.",
  'pre_hcp':"Hi {first}, {advocate} from Parkinson's Community. Following up before your upcoming doctor's appointment — I'd like to help you prepare. When can we talk? Reply STOP to opt out.",
  'post_hcp':"Hi {first}, {advocate} from Parkinson's Community, checking in after your appointment. When's a good time for a quick call? Reply STOP to opt out.",
