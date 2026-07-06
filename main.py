@@ -572,16 +572,23 @@ def adv_list(req: Request, view: str='queue', page: int=0):
         tot=c.execute("SELECT COUNT(*) n FROM dispositions WHERE actor=? AND ts LIKE ?",(email,now()[:10]+'%')).fetchone()['n']
         out=[dict(r) for r in rows]
     else:
-        w={"due":"bm.state='callback' AND replace(bm.callback_at,'T',' ')<=datetime('now','localtime')",
+        # 'due'/Priority holds any due callback whether or not it's been opened (state served after open),
+        # so a callback stays at the top until an outcome is logged; 'queue' excludes those due-callbacks
+        # so a member is never listed in both bands.
+        DUE="bm.callback_at IS NOT NULL AND replace(bm.callback_at,'T',' ')<=datetime('now','localtime')"
+        w={"due":f"bm.state IN('callback','served') AND {DUE}",
            "callbacks":"bm.state='callback' AND replace(bm.callback_at,'T',' ')>datetime('now','localtime')",
-           "queue":"bm.state IN('pending','served')"}.get(view)
+           "queue":f"bm.state IN('pending','served') AND NOT({DUE})"}.get(view)
         if not w: raise HTTPException(400,'bad view')
         base=f"""FROM batch_members bm JOIN batches b ON b.id=bm.batch_id JOIN member_core m ON m.member_id=bm.member_id
             WHERE b.advocate=? AND b.status='open' AND {w}"""
         tot=c.execute(f"SELECT COUNT(*) n {base}",(email,)).fetchone()['n']
-        rows=c.execute(f"""SELECT bm.member_id, m.first,m.last,m.age,m.state st,m.quals,m.conn,m.att,
+        rows=c.execute(f"""SELECT bm.member_id, m.first,m.last,m.age,m.state st,m.quals,
+            (SELECT COUNT(*) FROM dispositions d WHERE d.member_id=bm.member_id AND d.disposition LIKE 'Connected%') conn,
+            (SELECT COUNT(*) FROM dispositions d WHERE d.member_id=bm.member_id AND d.disposition<>'Skipped') att,
             bm.stage,bm.state bstate,bm.stage_attempts,bm.callback_at,bm.hcp_date,b.name batch,
-            (SELECT d.disposition||' · '||substr(d.ts,6,11) FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) last_disp
+            (SELECT d.disposition FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) outcome,
+            (SELECT d.note FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) note
             {base} ORDER BY CASE WHEN bm.callback_at IS NOT NULL THEN bm.callback_at ELSE '9' END,
             CASE bm.stage WHEN 'pre_hcp' THEN 0 WHEN 'post_hcp' THEN 1 ELSE 2 END, bm.seq LIMIT ? OFFSET ?""",
             (email,PER,page*PER)).fetchall()

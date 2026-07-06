@@ -211,6 +211,10 @@ async function createBatch(){const f=filters();f.name=$('bname').value;f.size=$(
  if(!f.advocate){toast('Pick or add an advocate first');return;}
  const r=await api('/api/dir/batch',{method:'POST',body:JSON.stringify(f)});toast('✅ Batch #'+r.batch_id+' → '+f.advocate+' ('+r.assigned+' members)');openTab('batches');loadStats();loadPie();pv();}
 async function addUser(){await api('/api/dir/user',{method:'POST',body:JSON.stringify({email:$('uemail').value,display:$('udisp').value})});toast('advocate saved');loadUsers();}
+async function addUser2(){const e=($('uemail2').value||'').trim(),n=($('udisp2').value||'').trim();
+ if(!e){toast('Enter the advocate email');return;}
+ await api('/api/dir/user',{method:'POST',body:JSON.stringify({email:e,display:n||e.split('@')[0]})});
+ toast('✅ '+(n||e)+' enrolled — now grant login access: send '+e+' to your admin');openTab('team');}
 async function loadStats(){const s=await api('/api/dir/stats');
  $('stats').innerHTML=[['Ready to call',s.eligible-s.in_batch],['In open batches',s.in_batch],['Worked today',s.worked_today],['Connected today',s.connected_today],['Callbacks due now',s.callbacks_due]]
  .map(x=>`<div class="stat"><div class="n">${(+x[1]).toLocaleString()}</div><div class="l">${x[0]}</div></div>`).join('');}
@@ -304,7 +308,9 @@ async function openTab(k){document.querySelectorAll('.tab').forEach(x=>x.classLi
   sec('“Connected” under 60s after dialing',f.connected_too_fast,['ts','actor','member_id','disposition','secs_after_click'])+
   sec('Disposition without any call/text click',f.disposition_without_any_click,['ts','actor','member_id','disposition']))||'<span class="muted">No integrity flags — clean so far 🎉</span>';}
  else if(k==='team'){const us=await loadUsers();
-  B.innerHTML='<table>'+us.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td><td>${esc(x.display)}</td><td>${x.active?'active':'disabled'}</td></tr>`).join('')+'</table><p class="muted">Add advocates in step 2. They also need IAP access on the Cloud Run service.</p>';}
+  B.innerHTML='<div class="row" style="margin-bottom:10px"><input id="uemail2" placeholder="advocate@parkinsons.community" style="flex:1"><input id="udisp2" placeholder="name" style="width:150px"><button class="good" onclick="addUser2()">＋ Add advocate</button></div>'
+  +'<table><tr><th>Email</th><th>Role</th><th>Name</th><th>Status</th></tr>'+us.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td><td>${esc(x.display)}</td><td>${x.active?'active':'disabled'}</td></tr>`).join('')+'</table>'
+  +'<p class="muted">Enter an email + name and click Add. A new advocate also needs Google/IAP login access — send their email to your admin (Claude) to grant it; they can\'t reach the app until then.</p>';}
  else if(k==='audit'){const a=await api('/api/dir/audit');
   B.innerHTML='<div style="max-height:340px;overflow-y:auto"><table>'+a.map(x=>`<tr><td class="muted">${x.ts.slice(5,16)}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.member_id||'')}</td><td class="muted">${esc((x.meta||'').slice(0,80))}</td></tr>`).join('')+'</table></div>';}}
 async function saveScripts(){const S=window._SCR;if(!S)return;
@@ -358,14 +364,14 @@ const SIT=['Reached someone else','Health event / hospitalized','Appointment cha
 async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
-function memberTable(rows,pri){return `<table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th>Conn/Att</th><th>Last outcome</th><th>Quals</th></tr>`+
+function memberTable(rows,pri){return `<table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
   rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
    return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
    <td>${(x.stage||'initial').replace('_',' ')} <span class="muted">${x.stage_attempts?('att '+x.stage_attempts+'/3'):''}</span></td>
    <td>${x.hcp_date||''}</td><td class="${due?'due':''}">${x.callback_at?x.callback_at.slice(5,16):''}</td>
-   <td>${x.conn}/${x.att}</td><td>${esc((x.last_disp||'').slice(0,34))}</td>
+   <td style="font-weight:650;color:${x.conn>0?'#0b6e4f':(x.att>0?'#b45309':'#666')}">${x.conn}/${x.att}</td><td>${esc((x.outcome||'').slice(0,26))}</td><td class="muted">${esc((x.note||'').slice(0,40))}</td>
    <td>${(x.quals||'').split(';').filter(Boolean).slice(0,2).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</td></tr>
-   <tr style="display:none" data-d="${x.member_id}"><td colspan="10"></td></tr>`;}).join('')+'</table>';}
+   <tr style="display:none" data-d="${x.member_id}"><td colspan="11"></td></tr>`;}).join('')+'</table>';}
 async function load(){tabs();const L=$('list');
  const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
  if(VIEW==='done'){
