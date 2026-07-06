@@ -998,3 +998,7 @@ def advocate_page(req: Request):
 @app.get('/crm', response_class=HTMLResponse)
 def crm_page(req: Request):
     u=who(req); need(u,'advocate'); return ADVOCATE_HTML.replace('__ME__',u['display'])
+
+# ---------------- monitor (isolated add-on: read-only director view; all code in monitor.py) ----------------
+from monitor import router as monitor_router   # import last so who/need/db/now already exist (no circular trap)
+app.include_router(monitor_router)

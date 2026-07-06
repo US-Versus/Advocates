@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py ui.py guides_seed.py ./
+COPY main.py ui.py monitor.py guides_seed.py ./
 ENV APP_DB=/data/app.db
 # app.db is NOT baked into the image — it lives on the mounted GCS volume (/data),
 # uploaded separately per SETUP_GCP.md. The container refuses to start without it.
