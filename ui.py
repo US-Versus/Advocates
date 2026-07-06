@@ -341,7 +341,9 @@ ADVOCATE_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name=
 <title>CRM — My Members</title><style>__CSS__
 .dgrid button.on{background:#0b6e4f;border-color:#0b6e4f;color:#fff;font-weight:700}
 #stageSeg button.on{background:#2563eb;border-color:#2563eb;color:#fff}
-.savedbar{border:1px solid #16a34a;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}</style></head><body>
+.savedbar{border:1px solid #16a34a;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.prihdr{font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;margin:6px 0}
+tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e0b;font-size:14px}</style></head><body>
 <header><h1>📞 My Members</h1><span class="sp"></span><span class="me" id="tally"></span><span class="me">__ME__</span></header>
 <div class="wrap">
 <div class="tabs" id="tabs"></div>
@@ -356,24 +358,30 @@ const SIT=['Reached someone else','Health event / hospitalized','Appointment cha
 async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
-async function load(){tabs();const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
- const L=$('list');
- if(!r.rows.length){L.innerHTML='<span class="muted">'+(VIEW==='due'?'Nothing due right now — check 📋 To call.':'Nothing here yet.')+'</span>';return;}
- if(VIEW==='done'){
-  L.innerHTML=`<table class="sheet"><tr><th>Member</th><th>Age</th><th>St</th><th>Disposition</th><th>When</th></tr>`+
-   r.rows.map(x=>`<tr><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td><td>${esc(x.disposition)}</td><td class="muted">${x.ts.slice(11,16)}</td></tr>`).join('')+'</table>'+pager(r);
-  wire(r);return;}
- LASTROWS=r.rows.map(x=>x.member_id);
- L.innerHTML=`<div class="row" style="margin-bottom:8px"><button class="good" onclick="startRun()">⚡ Rapid-dial next ${Math.min(5,r.rows.length)}</button><span class="muted" style="font-size:11px">text · dial · one-tap outcome · auto-advance through the queue</span></div>`+
-  `<table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th>Conn/Att</th><th>Last outcome</th><th>Quals</th></tr>`+
-  r.rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
-   return `<tr class="rowx" data-mid="${x.member_id}"><td aria-hidden="true">▸</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
+function memberTable(rows,pri){return `<table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th>Conn/Att</th><th>Last outcome</th><th>Quals</th></tr>`+
+  rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
+   return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
    <td>${(x.stage||'initial').replace('_',' ')} <span class="muted">${x.stage_attempts?('att '+x.stage_attempts+'/3'):''}</span></td>
    <td>${x.hcp_date||''}</td><td class="${due?'due':''}">${x.callback_at?x.callback_at.slice(5,16):''}</td>
    <td>${x.conn}/${x.att}</td><td>${esc((x.last_disp||'').slice(0,34))}</td>
    <td>${(x.quals||'').split(';').filter(Boolean).slice(0,2).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</td></tr>
-   <tr style="display:none" data-d="${x.member_id}"><td colspan="10"></td></tr>`;}).join('')+'</table>'+pager(r);
- wire(r);}
+   <tr style="display:none" data-d="${x.member_id}"><td colspan="10"></td></tr>`;}).join('')+'</table>';}
+async function load(){tabs();const L=$('list');
+ const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
+ if(VIEW==='done'){
+  if(!r.rows.length){L.innerHTML='<span class="muted">Nothing here yet.</span>';return;}
+  L.innerHTML=`<table class="sheet"><tr><th>Member</th><th>Age</th><th>St</th><th>Disposition</th><th>When</th></tr>`+
+   r.rows.map(x=>`<tr><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td><td>${esc(x.disposition)}</td><td class="muted">${x.ts.slice(11,16)}</td></tr>`).join('')+'</table>'+pager(r);
+  wire(r);return;}
+ // Priority band: on the main queue view, surface callbacks due NOW at the top (state=callback & due)
+ let pri=[];
+ if(VIEW==='queue'&&PAGE===0){try{const p=await api('/api/adv/list?view=due&page=0');pri=p.rows||[];}catch(e){}}
+ if(!r.rows.length&&!pri.length){L.innerHTML='<span class="muted">'+(VIEW==='due'?'Nothing due right now — check 📋 To call.':'Nothing here yet.')+'</span>';return;}
+ LASTROWS=[...pri.map(x=>x.member_id),...r.rows.map(x=>x.member_id)];   // priority members dial first
+ let html=`<div class="row" style="margin-bottom:8px"><button class="good" onclick="startRun()">⚡ Rapid-dial next ${Math.min(5,LASTROWS.length)}</button><span class="muted" style="font-size:11px">text · dial · one-tap outcome · auto-advance through the queue</span></div>`;
+ if(pri.length){html+=`<div class="prihdr">⭐ Priority — ${pri.length} callback${pri.length>1?'s':''} due now</div>`+memberTable(pri,true);}
+ html+=(pri.length?'<div class="lbl" style="margin-top:14px">📋 To call</div>':'')+(r.rows.length?memberTable(r.rows,false)+pager(r):'<span class="muted">No other members to call right now.</span>');
+ L.innerHTML=html;wire(r);}
 function pager(r){return `<div class="pager2"><button class="sec" id="pv" aria-label="Previous page" ${r.page==0?'disabled':''}>‹ Prev</button>
  <span class="muted">${r.total} members · page ${r.page+1} of ${Math.max(1,Math.ceil(r.total/r.per))} · showing ${r.per}/page</span>
  <button class="sec" id="nx" aria-label="Next page" ${(r.page+1)*r.per>=r.total?'disabled':''}>Next ›</button></div>`;}
@@ -406,10 +414,10 @@ async function openRow(mid){const L=$('list');
   <div class="lbl" style="margin-top:12px">Note <span class="muted" style="text-transform:none;font-weight:400">— always saved, on any outcome</span></div>
   <textarea id="note" placeholder="What happened on this call? (e.g. spoke to husband, wife not home; wants to reschedule after 5pm; in hospital, try in 2 weeks)" style="width:100%;height:52px"></textarea>
   <div class="lbl" style="margin-top:8px">Situation <span class="muted" style="text-transform:none;font-weight:400">— tap to select, tap again to unselect</span></div>
-  <div class="dgrid">${SIT.map(d=>`<button class="sec" data-o="${d}">${d}</button>`).join('')}</div>
+  <div class="dgrid">${SIT.map(d=>`<button class="sec" data-o="${d}">${d}</button>`).join('')}<button class="sec" data-o="Connected — Callback Scheduled" style="border-color:#0b6e4f;color:#0b6e4f;font-weight:700">📅 Requested callback</button></div>
   <div class="lbl" style="margin-top:8px">No-connect</div>
   <div class="dgrid">${DISP.map(d=>`<button class="sec" data-o="${d}">${d}</button>`).join('')}</div>
-  <div class="row"><span class="lbl" style="min-width:auto">New appt date</span><input id="newappt" type="date" title="if the appointment changed"><span class="lbl" style="min-width:auto">Callback</span><input id="cbat" type="datetime-local" title="callback time"></div>
+  <div class="row"><span class="lbl" style="min-width:auto">New appt date</span><input id="newappt" type="date" title="if the appointment changed"><span class="lbl" style="min-width:auto">📅 Callback date &amp; time</span><input id="cbat" type="datetime-local" title="when the member asked to be called back — counts as a connection, jumps them to Priority"></div>
   <div class="row" style="margin-top:10px"><button class="good" style="font-size:15px;padding:10px 20px" onclick="saveOutcome()">💾 Save call result</button>
    <span class="muted" style="font-size:11px">nothing saves until you press this (forms save with their own button) · then navigate below, or use the tabs above</span></div>
   <div class="row" style="margin-top:6px"><button class="sec" onclick="prevMember()">← previous</button><button class="sec" onclick="OPENMID=null;load()">☰ back to list</button><button class="sec" onclick="nextMember()">next →</button></div>
@@ -528,6 +536,7 @@ async function saveOutcome(){
  if(!sel){toast('Select an outcome first — or open a form above and save it there');return;}
  const d=sel.dataset.o;
  if(d==='Appointment changed'&&!($('newappt')&&$('newappt').value)){toast('Enter the new appointment date first');return;}
+ if(d==='Connected — Callback Scheduled'&&!($('cbat')&&$('cbat').value)){toast('Set the 📅 callback date & time first');return;}
  if(d==='Skipped'&&!($('note')&&$('note').value.trim())){toast('Add a note explaining the skip first');return;}
  const body={member_id:M.member_id,disposition:d,note:$('note')?$('note').value:'',served_at:M.served_at,
   call_click_at:M.call_click_at,text_click_at:M.text_click_at,
