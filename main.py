@@ -991,3 +991,8 @@ def director_page(req: Request):
 @app.get('/advocate', response_class=HTMLResponse)
 def advocate_page(req: Request):
     u=who(req); need(u,'advocate'); return ADVOCATE_HTML.replace('__ME__',u['display'])
+
+@app.get('/CRM', response_class=HTMLResponse)      # friendly alias -> advocates land here (crm.parkinsons.community/CRM)
+@app.get('/crm', response_class=HTMLResponse)
+def crm_page(req: Request):
+    u=who(req); need(u,'advocate'); return ADVOCATE_HTML.replace('__ME__',u['display'])
