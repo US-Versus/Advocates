@@ -34,12 +34,14 @@ def audit(actor, action, member_id=None, batch_id=None, meta=None):
         (now(), actor, action, member_id, batch_id, json.dumps(meta or {}))); c.commit()
 
 # ---------------- shared ----------------
-@app.get('/')
+@app.get('/', response_class=HTMLResponse)
 def root(req: Request):
     u = who(req)
-    q = '?as='+u['email'] if DEV else ''
-    # Director home = the full CRM Review Dashboard (real filters). Console (/director) is a secondary tool.
-    return RedirectResponse('/dashboard'+q if u['role']=='director' else '/advocate'+q)
+    # One address for everyone (crm.parkinsons.community). Role decides the view, served IN PLACE —
+    # nothing to type after the domain, URL bar stays on the bare host.
+    if u['role'] == 'director':
+        return full_dashboard(req)          # director view = the CRM Review Dashboard (live filters)
+    return HTMLResponse(ADVOCATE_HTML.replace('__ME__', u['display']))   # advocate view = the served queue
 
 @app.get('/healthz')
 def health(): return {'ok': True}
