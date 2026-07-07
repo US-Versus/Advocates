@@ -531,7 +531,12 @@ def _capture_startup():
         missing=[k for k in CAPTURE_MAP if k not in have]
         if missing: print('WARN: CAPTURE_MAP keys with no matching guide question:', missing)
         c.execute("CREATE INDEX IF NOT EXISTS ix_ch_et ON comm_hist(event_type, date)")
-        c.execute("CREATE INDEX IF NOT EXISTS ix_ans_export ON answers(member_id, batch_id, stage, ts)"); c.commit()
+        c.execute("CREATE INDEX IF NOT EXISTS ix_ans_export ON answers(member_id, batch_id, stage, ts)")
+        # punch clock + recurring schedule (additive; live DB gets them here, no migration)
+        c.execute("CREATE TABLE IF NOT EXISTS time_punches(id INTEGER PRIMARY KEY, actor TEXT, action TEXT, ts TEXT, signature TEXT, on_time INTEGER)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_punch_actor ON time_punches(actor, id)")
+        c.execute("CREATE TABLE IF NOT EXISTS staff_schedule(email TEXT PRIMARY KEY, blocks TEXT, days TEXT, tz TEXT, ot_permitted INTEGER DEFAULT 0, ot_multiple REAL DEFAULT 1.5, ot_hours REAL DEFAULT 0, updated_by TEXT, updated_ts TEXT)")
+        c.commit()
     except Exception as e: print('capture startup check skipped:', e)
 _capture_startup()
 def build_card(c, u, bid, mid):
@@ -869,6 +874,136 @@ def adv_summary(req: Request):
         (today+'%',u['email'],today[:7]+'%')).fetchone()
     return {'today': r['n'] or 0, 'connected': r['conn'] or 0,
             'forms_today': f['ftoday'] or 0, 'forms_month': f['fmonth'] or 0}
+
+# ================= punch clock + recurring schedule + OT policy =================
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo=None
+DEFAULT_TZ='America/Denver'; GRACE_MIN=15
+_TZLBL={'America/Denver':'MTN','America/Chicago':'CTN','America/New_York':'ETN','America/Los_Angeles':'PTN','America/Tegucigalpa':'HN'}
+_DABBR={'1':'M','2':'Tu','3':'W','4':'Th','5':'F','6':'Sa','7':'Su'}
+def _utcnow(): return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+def _tz(name):
+    if not ZoneInfo: return datetime.timezone.utc
+    try: return ZoneInfo(name or DEFAULT_TZ)
+    except Exception:
+        try: return ZoneInfo(DEFAULT_TZ)
+        except Exception: return datetime.timezone.utc
+def _to_local(ts, tzname):
+    if not ts: return None
+    try: dt=datetime.datetime.fromisoformat(ts)
+    except ValueError: return None
+    if dt.tzinfo is None: dt=dt.replace(tzinfo=datetime.timezone.utc)   # stored punches are UTC-aware
+    return dt.astimezone(_tz(tzname))
+def _sched_row(c, email): return c.execute("SELECT * FROM staff_schedule WHERE email=?",(email,)).fetchone()
+def _sched_tz(c, email):
+    s=_sched_row(c,email); return (s['tz'] if s and s['tz'] else DEFAULT_TZ)
+def _sched_text(s):
+    try: blocks=json.loads(s['blocks'] or '[]')
+    except Exception: blocks=[]
+    bt=', '.join(f"{a}–{b}" for a,b in blocks) or '—'
+    days=s['days'] or ''
+    dt='M-F' if days=='12345' else (''.join(_DABBR.get(d,'') for d in days) if days else '?')
+    return f"{bt} · {dt} · {_TZLBL.get(s['tz'],s['tz'] or DEFAULT_TZ)}"
+def _mins(hm):
+    try: h,m=hm.split(':'); return int(h)*60+int(m)
+    except Exception: return 0
+def _sched_today(c, email):
+    """Today's blocks/expected in-out/hours in the advocate's tz, or {'today':False}/None."""
+    s=_sched_row(c,email)
+    if not s: return None
+    tzname=s['tz'] or DEFAULT_TZ
+    wd=str(datetime.datetime.now(_tz(tzname)).isoweekday())   # 1=Mon..7=Sun
+    if wd not in (s['days'] or ''): return {'today':False,'tz':tzname}
+    try: blocks=json.loads(s['blocks'] or '[]')
+    except Exception: blocks=[]
+    if not blocks: return {'today':False,'tz':tzname}
+    hrs=sum(max(0,_mins(b)-_mins(a)) for a,b in blocks)/60.0
+    return {'today':True,'tz':tzname,'blocks':blocks,'in':blocks[0][0],'out':blocks[-1][1],'hours':round(hrs,2)}
+def _on_time(c, email, ts_utc, action):
+    st=_sched_today(c,email)
+    if not st or not st.get('today'): return None
+    loc=_to_local(ts_utc, st['tz'])
+    if not loc: return None
+    tmin=_mins(st['in'] if action=='in' else st['out'])
+    return 1 if abs((loc.hour*60+loc.minute)-tmin)<=GRACE_MIN else 0
+def _worked_hours(c, email, tzname):
+    tz=_tz(tzname); today=datetime.datetime.now(tz).date().isoformat()
+    total=0.0; open_in=None
+    for r in c.execute("SELECT action,ts FROM time_punches WHERE actor=? ORDER BY id",(email,)):
+        loc=_to_local(r['ts'],tzname)
+        if not loc or loc.date().isoformat()!=today: continue
+        if r['action']=='in': open_in=loc
+        elif r['action']=='out' and open_in: total+=(loc-open_in).total_seconds()/3600.0; open_in=None
+    if open_in: total+=(datetime.datetime.now(tz)-open_in).total_seconds()/3600.0
+    return round(total,2)
+def _punch_status(c, email):
+    """Today's first-in / last-out / on-clock / hours (advocate tz)."""
+    tzname=_sched_tz(c,email); tz=_tz(tzname); today=datetime.datetime.now(tz).date().isoformat()
+    fin=lout=None; on=False; in_ot=out_ot=None
+    for r in c.execute("SELECT action,ts,on_time FROM time_punches WHERE actor=? ORDER BY id",(email,)):
+        loc=_to_local(r['ts'],tzname)
+        if not loc or loc.date().isoformat()!=today: continue
+        hm=loc.strftime('%H:%M')
+        if r['action']=='in': fin=fin or hm; in_ot=r['on_time']; on=True
+        else: lout=hm; out_ot=r['on_time']; on=False
+    return {'in':fin,'out':(None if on else lout),'on_clock':on,'hours':_worked_hours(c,email,tzname),
+            'in_ontime':in_ot,'out_ontime':out_ot}
+def _ot_status(c, email, worked):
+    s=_sched_row(c,email)
+    if not s: return None
+    st=_sched_today(c,email); sched_h=(st.get('hours') if st and st.get('today') else 0) or 0
+    if worked<=sched_h+0.02: return {'over':False,'sched':sched_h}
+    over=round(worked-sched_h,2); permitted=bool(s['ot_permitted']); cap=s['ot_hours'] or 0
+    return {'over':True,'over_hours':over,'permitted':permitted,'multiple':s['ot_multiple'],'cap':cap,
+            'ok':permitted and (cap==0 or over<=cap+0.02),'sched':sched_h}
+
+@app.post('/api/adv/punch')
+async def punch(req: Request):
+    u=who(req); need(u,'advocate'); f=await req.json(); c=db(); em=u['email']
+    sig=(f.get('signature') or '').strip()
+    if not sig: raise HTTPException(400,'Type your name to sign the punch')
+    last=c.execute("SELECT action FROM time_punches WHERE actor=? ORDER BY id DESC LIMIT 1",(em,)).fetchone()
+    action='in' if (not last or last['action']=='out') else 'out'
+    ts=_utcnow(); ot=_on_time(c,em,ts,action)
+    c.execute("INSERT INTO time_punches(actor,action,ts,signature,on_time) VALUES(?,?,?,?,?)",(em,action,ts,sig[:80],ot))
+    c.commit(); audit(em,'punch',meta={'action':action,'on_time':ot})
+    return {'ok':True,'action':action,'ts':ts,'on_clock':action=='in','hours_today':_worked_hours(c,em,_sched_tz(c,em))}
+
+@app.get('/api/adv/timecard')
+def timecard(req: Request):
+    u=who(req); need(u,'advocate'); c=db(); em=u['email']
+    last=c.execute("SELECT action,ts FROM time_punches WHERE actor=? ORDER BY id DESC LIMIT 1",(em,)).fetchone()
+    on=bool(last and last['action']=='in'); s=_sched_row(c,em); tz=(s['tz'] if s else DEFAULT_TZ)
+    out={'on_clock':on,'since':(last['ts'] if on else None),'hours_today':_worked_hours(c,em,tz)}
+    out['sched_text']=(_sched_text(s) if s else None)
+    out['ot']=({'permitted':bool(s['ot_permitted']),'multiple':s['ot_multiple'],'hours':s['ot_hours']} if s else None)
+    return out
+
+@app.post('/api/dir/schedule')
+async def set_schedule(req: Request):
+    u=who(req); need(u,'director'); f=await req.json(); c=db()
+    em=(f.get('email') or '').lower().strip()
+    if not em: raise HTTPException(400,'email required')
+    if not c.execute("SELECT 1 FROM users WHERE email=?",(em,)).fetchone(): raise HTTPException(400,'not an enrolled user')
+    days=''.join(d for d in str(f.get('days') or '') if d in '1234567') or '12345'
+    cb=[]
+    for b in (f.get('blocks') or []):
+        try:
+            a,z=str(b[0]),str(b[1])
+            if re.match(r'^\d{1,2}:\d{2}$',a) and re.match(r'^\d{1,2}:\d{2}$',z): cb.append([a,z])
+        except Exception: pass
+    tz=(f.get('tz') or DEFAULT_TZ).strip()
+    c.execute("""INSERT INTO staff_schedule(email,blocks,days,tz,ot_permitted,ot_multiple,ot_hours,updated_by,updated_ts)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(email) DO UPDATE SET blocks=excluded.blocks,days=excluded.days,tz=excluded.tz,
+          ot_permitted=excluded.ot_permitted,ot_multiple=excluded.ot_multiple,ot_hours=excluded.ot_hours,
+          updated_by=excluded.updated_by,updated_ts=excluded.updated_ts""",
+        (em,json.dumps(cb),days,tz,1 if f.get('ot_permitted') else 0,
+         float(f.get('ot_multiple') or 1.5),float(f.get('ot_hours') or 0),u['email'],now()))
+    c.commit(); audit(u['email'],'set_schedule',meta={'email':em,'days':days,'blocks':cb})
+    return {'ok':True}
 
 # ---------------- pages ----------------
 DASH_PATH = os.environ.get('DASH_PATH', os.path.join(os.path.dirname(DB), 'dashboard.html'))

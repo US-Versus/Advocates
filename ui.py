@@ -351,7 +351,7 @@ ADVOCATE_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name=
 .savedbar{border:1px solid #16a34a;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .prihdr{font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;margin:6px 0}
 tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e0b;font-size:14px}</style></head><body>
-<header><h1>📞 My Members</h1><span class="sp"></span><span class="me" id="tally"></span><span class="me">__ME__</span></header>
+<header><h1>📞 My Members</h1><span id="punch" style="margin-left:12px"></span><span class="sp"></span><span class="me" id="tally"></span><span class="me">__ME__</span></header>
 <div class="wrap">
 <div class="tabs" id="tabs"></div>
 <div id="list" class="panel">Loading…</div>
@@ -363,6 +363,16 @@ const VIEWS=[['queue','📋 To call'],['done','✅ Done today']];  // callbacks 
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
 async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
+async function loadTimecard(){try{const tc=await api('/api/adv/timecard');const on=tc.on_clock;
+ const since=tc.since?new Date(tc.since).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+ const status=on?`on the clock${since?' since '+since:''} · ${tc.hours_today}h`:(tc.hours_today?`off · ${tc.hours_today}h today`:'off the clock');
+ const sched=tc.sched_text?('Required: '+tc.sched_text):'Schedule: work honestly — time is still tracked';
+ $('punch').innerHTML=`<button class="${on?'callbtn':'good'}" style="${on?'background:#b45309;':''}padding:5px 12px;font-size:13px" onclick="punchClock()">🕐 Punch ${on?'Out':'In'}</button> <span class="muted" style="font-size:11px">${esc(status)} · ${esc(sched)}</span>`;
+}catch(e){}}
+async function punchClock(){const name=prompt('Type your name to sign this punch:');if(!name||!name.trim())return;
+ try{const r=await api('/api/adv/punch',{method:'POST',body:JSON.stringify({signature:name.trim()})});
+ toast(r.action==='in'?'🕐 Punched in — you are on the clock':'🕐 Punched out — '+r.hours_today+'h today');loadTimecard();}
+ catch(e){toast('Punch failed — try again');}}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
 function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
@@ -557,6 +567,6 @@ async function saveOutcome(){
   document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
   savedBanner(d);   // stay on the card — advocate navigates with the buttons or tabs
  }finally{BUSY=false;}}
-tally();load();
+tally();load();loadTimecard();setInterval(loadTimecard,60000);
 </script></body></html>"""
 ADVOCATE_HTML = ADVOCATE_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)
