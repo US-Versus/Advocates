@@ -1006,15 +1006,19 @@ def _overlap_h(a,b,s,e):
     lo=a if a>s else s; hi=b if b<e else e
     return max(0.0,(hi-lo).total_seconds()/3600.0)
 def _local_day_bounds_utc(tzname, day_iso=None):
-    """[start,end) UTC datetimes bounding the given local calendar day (default today)."""
+    """[start,end) UTC datetimes bounding the given local calendar day (default today).
+    Both bounds are TRUE local midnights, so DST-transition days (23h/25h) stay exact —
+    end is next-day-midnight, not start+24h."""
     tz=_tz(tzname); utc=datetime.timezone.utc
     d=None
     if day_iso:
         try: d=datetime.date.fromisoformat(str(day_iso)[:10])
         except (ValueError,TypeError): d=None
     if d is None: d=datetime.datetime.now(tz).date()
+    nd=d+datetime.timedelta(days=1)
     ds=datetime.datetime(d.year,d.month,d.day,tzinfo=tz).astimezone(utc)
-    return ds, ds+datetime.timedelta(days=1)
+    de=datetime.datetime(nd.year,nd.month,nd.day,tzinfo=tz).astimezone(utc)
+    return ds, de
 def _worked_hours_day(c, email, tzname, day_iso=None):
     """Hours inside the given local day (default today): pair in→out, CLIP each shift to
     [day 00:00, +1d). All arithmetic in UTC, so DST offset changes and cross-midnight/
@@ -1098,15 +1102,15 @@ def adv_worklog(req: Request, day: str=''):
         loc=_to_local(r['ts'],tz); disp=r['disposition'] or ''
         isform=disp.startswith('Connected — Guide completed'); isconn=disp.startswith('Connected')
         calls+=1; connected+=1 if isconn else 0; forms+=1 if isform else 0
-        events.append({'t':(loc.strftime('%H:%M') if loc else ''),'sort':(loc.isoformat() if loc else r['ts']),
+        events.append({'t':(loc.strftime('%H:%M') if loc else ''),'sort':r['ts'],   # sort on the UTC instant (naive-UTC ts), DST-fold safe
             'kind':('form' if isform else 'call'),'member_id':r['member_id'],
             'member':(str(r['first'] or '')+' '+str(r['last'] or '')).strip(),'outcome':disp,'note':r['note'],
             'handle_secs':r['handle_secs'],'connected':isconn,
             'stage':((re.search(r'\((\w+)\)$',disp) or [None,''])[1] if isform else '')})
     for r in c.execute("SELECT action,ts,on_time,signature FROM time_punches WHERE actor=? ORDER BY id",(em,)):
-        loc=_to_local(r['ts'],tz)
+        loc=_to_local(r['ts'],tz); pu=_parse_utc(r['ts'])
         if not loc or loc.date().isoformat()!=day: continue
-        events.append({'t':loc.strftime('%H:%M'),'sort':loc.isoformat(),'kind':'punch',
+        events.append({'t':loc.strftime('%H:%M'),'sort':(pu.replace(tzinfo=None).isoformat() if pu else r['ts']),'kind':'punch',
             'action':r['action'],'on_time':r['on_time'],'signature':r['signature']})
     events.sort(key=lambda e:e['sort'])
     s=_sched_row(c,em); prev=(d-datetime.timedelta(days=1)).isoformat(); nxt=(d+datetime.timedelta(days=1)).isoformat()
@@ -1125,7 +1129,7 @@ def adv_worklog_search(req: Request, q: str=''):
         (SELECT d.disposition FROM dispositions d WHERE d.member_id=m.member_id AND d.actor=? ORDER BY d.id DESC LIMIT 1) last_outcome
         FROM member_core m
         WHERE m.member_id IN (SELECT member_id FROM dispositions WHERE actor=?
-            UNION SELECT bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=?)
+            UNION SELECT bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=? AND bm.state IN('served','callback','done'))
         AND (m.first LIKE ? OR m.last LIKE ? OR (m.first||' '||m.last) LIKE ? OR m.phone LIKE ? OR m.phone_last4 LIKE ? OR m.member_id LIKE ?)
         ORDER BY last_ts DESC LIMIT 20""",(em,em,em,em,like,like,like,like,like,like)).fetchall()
     tz=_sched_tz(c,em); out=[]
@@ -1141,9 +1145,9 @@ def adv_member_review(mid: str, req: Request):
     NOT actionable like adv_open — lets them review past contacts even after the member is done."""
     u=who(req); need(u,'advocate'); c=db(); em=u['email']
     owned=(c.execute("SELECT 1 FROM dispositions WHERE actor=? AND member_id=? LIMIT 1",(em,mid)).fetchone()
-        or c.execute("SELECT 1 FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=? AND bm.member_id=? LIMIT 1",(em,mid)).fetchone())
+        or c.execute("SELECT 1 FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=? AND bm.member_id=? AND bm.state IN('served','callback','done') LIMIT 1",(em,mid)).fetchone())
     if not owned: raise HTTPException(403,'not one of your contacts')
-    m=c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
+    m=c.execute("SELECT member_id,first,last,city,state,age,quals,phone FROM member_core WHERE member_id=?",(mid,)).fetchone()   # explicit whitelist — no internal flags to the client
     if not m: raise HTTPException(404,'no such member')
     d=dict(m); ph=d.pop('phone',None); d['phone']='···'+((ph or '')[-4:])   # masked — review, not dial
     tz=_sched_tz(c,em)
