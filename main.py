@@ -1136,14 +1136,21 @@ def adv_worklog_search(req: Request, q: str=''):
     u=who(req); need(u,'advocate'); c=db(); em=u['email']; q=(q or '').strip()
     if len(q)<2: return {'rows':[]}
     like='%'+q.replace('%','').replace('_','')+'%'
-    rows=c.execute("""SELECT m.member_id,m.first,m.last,m.city,m.state,
+    qd=re.sub(r'\D','',q)                        # digits only — phone is stored E.164 '+1XXXXXXXXXX'
+    ors=["m.first LIKE ?","m.last LIKE ?","(m.first||' '||m.last) LIKE ?","m.member_id LIKE ?"]
+    op=[like,like,like,like]
+    if len(qd)>=3:                               # match a phone typed in ANY format (dashes/parens/spaces/+1) against the digits-only stored number
+        ors.append("REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(m.phone,'+',''),'-',''),'(',''),')',''),' ',''),'.','') LIKE ?")
+        op.append('%'+qd+'%')
+        ors.append("m.phone_last4 LIKE ?"); op.append('%'+qd+'%')
+    rows=c.execute(f"""SELECT m.member_id,m.first,m.last,m.city,m.state,
         (SELECT d.ts FROM dispositions d WHERE d.member_id=m.member_id AND d.actor=? ORDER BY d.id DESC LIMIT 1) last_ts,
         (SELECT d.disposition FROM dispositions d WHERE d.member_id=m.member_id AND d.actor=? ORDER BY d.id DESC LIMIT 1) last_outcome
         FROM member_core m
         WHERE m.member_id IN (SELECT member_id FROM dispositions WHERE actor=?
             UNION SELECT bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=? AND bm.state IN('served','callback','done'))
-        AND (m.first LIKE ? OR m.last LIKE ? OR (m.first||' '||m.last) LIKE ? OR m.phone LIKE ? OR m.phone_last4 LIKE ? OR m.member_id LIKE ?)
-        ORDER BY last_ts DESC LIMIT 20""",(em,em,em,em,like,like,like,like,like,like)).fetchall()
+        AND ({' OR '.join(ors)})
+        ORDER BY last_ts DESC LIMIT 20""",(em,em,em,em,*op)).fetchall()
     tz=_sched_tz(c,em); out=[]
     for r in rows:
         loc=_to_local(r['last_ts'],tz) if r['last_ts'] else None
