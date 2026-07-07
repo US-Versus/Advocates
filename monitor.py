@@ -103,6 +103,7 @@ def monitor_data(req: Request):
         'as_of': ref, 'date': today,
         'aggregate': {
             'calls_today': calls_today, 'connected_today': connected_today,
+            'bad_today': agg_disp.get('Bad Number', 0),   # do-not-call numbers flagged today
             'advocates_active': active, 'dispositions': agg_disp, 'log': log,
         },
         'advocates': advocates,
@@ -195,7 +196,7 @@ function render(d){
  const ag=d.aggregate;
  $('datelbl').textContent='· '+d.date;
  $('aggstats').innerHTML=[['Calls today',ag.calls_today],['Connected today',ag.connected_today],
-  ['Advocates active',ag.advocates_active]].map(s=>`<div class="stat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('');
+  ['Bad numbers',ag.bad_today||0],['Advocates active',ag.advocates_active]].map(s=>`<div class="stat"><div class="n">${s[1]}</div><div class="l">${s[0]}</div></div>`).join('');
  const pb=piebar(ag.dispositions);
  $('aggbar').innerHTML=pb.empty?'<div style="background:var(--faint);width:100%">no calls yet today</div>':pb.bar;
  $('aggleg').innerHTML=pb.leg;

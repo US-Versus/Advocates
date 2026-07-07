@@ -608,6 +608,8 @@ def _capture_startup():
         c.execute("CREATE TABLE IF NOT EXISTS staff_schedule(email TEXT PRIMARY KEY, blocks TEXT, days TEXT, tz TEXT, ot_permitted INTEGER DEFAULT 0, ot_multiple REAL DEFAULT 1.5, ot_hours REAL DEFAULT 0, updated_by TEXT, updated_ts TEXT)")
         # director-assigned member tiers (synced from the Review Dashboard; visible to advocates + monitor)
         c.execute("CREATE TABLE IF NOT EXISTS member_tiers(member_id TEXT PRIMARY KEY, tier TEXT, updated_by TEXT, updated_ts TEXT)")
+        # backfill: any member already marked 'Bad Number' becomes do-not-call (idempotent; flips only 0->1)
+        c.execute("UPDATE member_core SET refused=1 WHERE refused=0 AND member_id IN (SELECT DISTINCT member_id FROM dispositions WHERE disposition='Bad Number')")
         c.commit()
     except Exception as e: print('capture startup check skipped:', e)
 _capture_startup()
@@ -930,7 +932,7 @@ async def disposition(req: Request):
     c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
         (mid, now()[:10], f'Advocate Call ({u["display"]})', d + ((' — '+f.get('note')) if f.get('note') else ''),
          'C' if (d.startswith('Connected') or d in('Reached someone else','Appointment changed')) else ('B' if d=='Bad Number' else 'A' if d in('Left Voicemail','No Answer') else 'O')))
-    if d in ('Refused / Remove','Deceased'):
+    if d in ('Refused / Remove','Deceased','Bad Number'):   # Bad Number -> do-not-call: flag it so it's excluded from future pushes + tracked by the director
         c.execute("UPDATE member_core SET refused=1 WHERE member_id=?",(mid,))
     c.commit()
     audit(u['email'],'disposition',mid,bid,meta={'d':d,'handle':handle})

@@ -532,7 +532,7 @@ async function submitGuide(){
   const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
   if(r.dup){toast('Already saved — '+r.outcome);return;}   // retry of a recorded submit: no re-advance
   toast('Saved — '+r.outcome);tally();
-  savedBanner(r.outcome);   // stay on the card — advocate chooses where to go
+  OPENMID=null;load();   // refresh the queue so it reflects the saved outcome (member advances/updates/leaves)
  }finally{BUSY=false;}}
 async function saveOutcome(){
  if(BUSY)return;
@@ -551,7 +551,7 @@ async function saveOutcome(){
   await api('/api/adv/disposition',{method:'POST',body:JSON.stringify(body)});
   toast(d+' saved');tally();
   document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
-  savedBanner(d);   // stay on the card — advocate navigates with the buttons or tabs
+  OPENMID=null;load();   // refresh the queue so the outcome shows (bad-number/terminal members leave the list)
  }finally{BUSY=false;}}
 // ---------------- Work Log (time-ordered day review) ----------------
 async function renderWorkLog(){const L=$('list');L.innerHTML='<span class="muted">Loading…</span>';
