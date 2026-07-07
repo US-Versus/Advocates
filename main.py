@@ -37,10 +37,12 @@ class _Conn(sqlite3.Connection):
                     raise
 
 def db():
-    c = sqlite3.connect(DB, factory=_Conn, timeout=5.0)
+    c = sqlite3.connect(DB, factory=_Conn, timeout=20.0)
     c.row_factory = sqlite3.Row
-    c.execute("PRAGMA busy_timeout=5000")
-    c.execute("PRAGMA synchronous=FULL")
+    c.execute("PRAGMA busy_timeout=20000")   # wait through a transient gcsfuse write stall, don't 500
+    c.execute("PRAGMA synchronous=NORMAL")   # FULL forces a full GCS object write per commit WHILE holding the
+                                             # exclusive lock -> cascading 'database is locked' under load. NORMAL
+                                             # keeps commits fast (durability still covered by snapshots+versioning).
     return c
 
 def now(): return datetime.datetime.now().isoformat(timespec='seconds')
