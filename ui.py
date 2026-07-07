@@ -409,14 +409,14 @@ async function punchClock(){const name=prompt('Type your name to sign this punch
  catch(e){toast('Punch failed — try again');}}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;WLDAY=null;load();});}
-function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
+function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Tier</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
   rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
-   return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
+   return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td><td>${esc(x.tier||'')}</td>
    <td>${(x.stage||'initial').replace('_',' ')} <span class="muted">${x.stage_attempts?('att '+x.stage_attempts+'/3'):''}</span></td>
    <td>${x.hcp_date||''}</td><td class="${due?'due':''}">${x.callback_at?x.callback_at.slice(5,16):''}</td>
    <td style="font-weight:650;color:${x.conn>0?'#0b6e4f':(x.att>0?'#b45309':'#666')}">${x.conn}/${x.att}</td><td>${esc((x.outcome||'').slice(0,26))}</td><td class="muted">${esc((x.note||'').slice(0,40))}</td>
    <td>${(x.quals||'').split(';').filter(Boolean).slice(0,2).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</td></tr>
-   <tr style="display:none" data-d="${x.member_id}"><td colspan="11"></td></tr>`;}).join('')+'</table></div>';}
+   <tr style="display:none" data-d="${x.member_id}"><td colspan="12"></td></tr>`;}).join('')+'</table></div>';}
 async function load(){tabs();const L=$('list');
  if(VIEW==='worklog')return renderWorkLog();
  const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);

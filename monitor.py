@@ -91,10 +91,11 @@ def monitor_data(req: Request):
     log = [dict(x) for x in c.execute("""
         SELECT d.ts, d.actor, COALESCE(u.display, d.actor) display, d.member_id,
                TRIM(COALESCE(m.first,'') || ' ' || COALESCE(m.last,'')) name,
-               d.disposition, COALESCE(d.note,'') note
+               d.disposition, COALESCE(d.note,'') note, t.tier tier
         FROM dispositions d
         LEFT JOIN member_core m USING(member_id)
         LEFT JOIN users u ON u.email = d.actor
+        LEFT JOIN member_tiers t ON t.member_id = d.member_id
         WHERE d.ts>=? AND d.ts<? ORDER BY d.ts LIMIT 200""", (lo, hi))]
     for x in log: x['t'] = _hm(x['ts'])                       # localized (Mountain) HH:MM
 
@@ -175,10 +176,6 @@ MONITOR_HTML = ("""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
 <div class="toast" id="toast"></div>
 <script>__JSC__
 let BUSY=false;
-// Tiers are director-assigned labels stored by the Review Dashboard in localStorage
-// (crm_tiers). /monitor is same-origin as /dashboard, so we read them directly here.
-function readTiers(){try{return JSON.parse(localStorage.getItem('crm_tiers')||'{}')||{};}catch(e){return {};}}
-function tierChip(t){return t?`<span class="tchip" style="background:var(--brand)">${esc(t)}</span>`:'<span class="muted">—</span>';}
 const DCOL={'Reached someone else':'var(--brand)','Left Voicemail':'#64748b','No Answer':'var(--warn)',
  'Bad Number':'var(--bad)','Refused / Remove':'var(--bad)','Deceased':'var(--bad)','DQ — Clinical':'var(--bad)',
  'Health event / hospitalized':'var(--warn)','Appointment changed':'var(--brand)','Skipped':'var(--faint)'};
@@ -202,11 +199,10 @@ function render(d){
  const pb=piebar(ag.dispositions);
  $('aggbar').innerHTML=pb.empty?'<div style="background:var(--faint);width:100%">no calls yet today</div>':pb.bar;
  $('aggleg').innerHTML=pb.leg;
- const TIERS=readTiers();
  $('agglog').innerHTML=ag.log.length?ag.log.slice().reverse().map(x=>{
   const t=x.t||'', who=(x.name||'').trim()||x.member_id;
   return `<tr><td class="muted">${t}</td><td>${esc(x.display)}</td><td>${esc(who)}</td>`
-   +`<td>${tierChip(TIERS[x.member_id])}</td>`
+   +`<td>${esc(x.tier||'—')}</td>`
    +`<td><span class="dot ${dclass(x.disposition)}">●</span> ${esc(x.disposition)}</td>`
    +`<td class="muted">${esc((x.note||'').slice(0,60))}</td></tr>`;}).join('')
   :'<tr><td colspan="6" class="muted">No calls logged today.</td></tr>';

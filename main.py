@@ -604,6 +604,8 @@ def _capture_startup():
         c.execute("CREATE TABLE IF NOT EXISTS time_punches(id INTEGER PRIMARY KEY, actor TEXT, action TEXT, ts TEXT, signature TEXT, on_time INTEGER)")
         c.execute("CREATE INDEX IF NOT EXISTS ix_punch_actor ON time_punches(actor, id)")
         c.execute("CREATE TABLE IF NOT EXISTS staff_schedule(email TEXT PRIMARY KEY, blocks TEXT, days TEXT, tz TEXT, ot_permitted INTEGER DEFAULT 0, ot_multiple REAL DEFAULT 1.5, ot_hours REAL DEFAULT 0, updated_by TEXT, updated_ts TEXT)")
+        # director-assigned member tiers (synced from the Review Dashboard; visible to advocates + monitor)
+        c.execute("CREATE TABLE IF NOT EXISTS member_tiers(member_id TEXT PRIMARY KEY, tier TEXT, updated_by TEXT, updated_ts TEXT)")
         c.commit()
     except Exception as e: print('capture startup check skipped:', e)
 _capture_startup()
@@ -661,6 +663,7 @@ def adv_list(req: Request, view: str='queue', page: int=0):
             (SELECT COUNT(*) FROM dispositions d WHERE d.member_id=bm.member_id AND d.disposition LIKE 'Connected%') conn,
             (SELECT COUNT(*) FROM dispositions d WHERE d.member_id=bm.member_id AND d.disposition<>'Skipped') att,
             bm.stage,bm.state bstate,bm.stage_attempts,bm.callback_at,bm.hcp_date,b.name batch,
+            (SELECT t.tier FROM member_tiers t WHERE t.member_id=bm.member_id) tier,
             (SELECT d.disposition FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) outcome,
             (SELECT d.note FROM dispositions d WHERE d.member_id=bm.member_id ORDER BY d.id DESC LIMIT 1) note
             {base} ORDER BY CASE WHEN bm.callback_at IS NOT NULL THEN bm.callback_at ELSE '9' END,
@@ -1128,6 +1131,33 @@ def dir_worklog(req: Request, email: str='', day: str=''):
         raise HTTPException(400,'not an advocate')
     return _worklog(c, em, _sched_tz(c,em), day)
 
+# ---------------- Member tiers (director-assigned; DB-backed) ----------------
+@app.get('/api/dir/tiers')
+def get_tiers(req: Request):
+    """The full member_id -> tier map (director-only)."""
+    u=who(req); need(u,'director'); c=db()
+    return {'tiers':{r['member_id']:r['tier'] for r in c.execute("SELECT member_id,tier FROM member_tiers")}}
+
+@app.post('/api/dir/tiers_sync')
+async def tiers_sync(req: Request):
+    """Persist the dashboard's tier labels. Per-browser delta: upsert the posted map and
+    delete the explicitly-removed ids. No global replace, so multiple directors' tiers
+    merge instead of clobbering, and a fresh/empty browser never wipes existing tiers."""
+    u=who(req); need(u,'director'); f=await req.json(); c=db()
+    posted=f.get('tiers') or {}
+    clean={str(k):str(v).strip()[:80] for k,v in posted.items() if k and v and str(v).strip()}
+    removed=[str(x) for x in (f.get('removed') or []) if x]
+    if clean:
+        c.executemany("""INSERT INTO member_tiers(member_id,tier,updated_by,updated_ts) VALUES(?,?,?,?)
+            ON CONFLICT(member_id) DO UPDATE SET tier=excluded.tier,updated_by=excluded.updated_by,updated_ts=excluded.updated_ts""",
+            [(k,v,u['email'],now()) for k,v in clean.items()])
+    if removed:
+        c.execute(f"DELETE FROM member_tiers WHERE member_id IN ({','.join('?'*len(removed))})",removed)
+    c.commit()
+    total=c.execute("SELECT COUNT(*) n FROM member_tiers").fetchone()['n']
+    audit(u['email'],'tiers_sync',meta={'upserted':len(clean),'removed':len(removed),'total':total})
+    return {'ok':True,'upserted':len(clean),'removed':len(removed),'total':total}
+
 @app.get('/api/adv/worklog_search')
 def adv_worklog_search(req: Request, q: str=''):
     """Find a person THIS advocate contacted, by name / phone / member ID."""
@@ -1277,6 +1307,17 @@ def full_dashboard(req: Request):
   fetch('/api/dir/dashboard_delta'+AS+since).then(function(r){return r.json();}).then(applyDelta)
   .catch(function(e){console.warn('live delta unavailable:',e);});}
  go();
+ // --- tier sync: mirror the dashboard's localStorage crm_tiers into the DB so advocates + the
+ // monitor see director-assigned tiers. Per-browser delta (upsert + explicit removes) — no wipe.
+ (function(){ var prev='{}';
+  function sync(){ try{
+    var cur=localStorage.getItem('crm_tiers')||'{}'; if(cur===prev)return;
+    var curObj=JSON.parse(cur), prevObj=JSON.parse(prev);
+    var removed=Object.keys(prevObj).filter(function(k){return !(k in curObj);});
+    fetch('/api/dir/tiers_sync'+AS,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tiers:curObj,removed:removed})}).then(function(){prev=cur;}).catch(function(){});
+  }catch(e){} }
+  sync(); setInterval(sync,15000);
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden)sync(); }); })();
 })();
 </script>"""
     return HTMLResponse(html.replace('</body>', shim + '</body>') if '</body>' in html else html + shim)
