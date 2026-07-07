@@ -2,7 +2,7 @@
 Runs on Cloud Run behind Identity-Aware Proxy. Roles enforced server-side; every action audited.
 Local dev:  DEV=1 uvicorn main:app --reload   (then ?as=you@org.com)
 """
-import os, re, sqlite3, json, datetime, urllib.parse
+import os, re, sqlite3, json, datetime, urllib.parse, threading, time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -12,8 +12,36 @@ MIN_HANDLE_SECS = 20          # dispositions faster than this get flagged
 CONNECT_MIN_SECS = 60         # 'Connected' dispositions faster than this after call-click get flagged
 app = FastAPI()
 
+# --- Bridge hardening (Stage 0) ---------------------------------------------
+# The live DB is SQLite on a gcsfuse-mounted GCS bucket, served by ONE Cloud Run
+# instance. gcsfuse does not reliably honor the POSIX (fcntl) locks SQLite uses,
+# and the app writes from a threadpool (sync endpoints) + the event loop (async
+# endpoints), so two writers could otherwise collide. We serialize every commit
+# through a single process-wide lock (so the OS/gcsfuse never sees two concurrent
+# writers from this process) and retry the rare 'database is locked'. busy_timeout
+# makes the write-execute phase WAIT for a lock instead of failing immediately.
+# Reads never take the lock, so read concurrency is unaffected. This is a bridge
+# until the Cloud SQL/Postgres migration (Stage 2); snapshots + versioning cover
+# the residual risk.
+_WRITE_LOCK = threading.RLock()
+
+class _Conn(sqlite3.Connection):
+    def commit(self):
+        with _WRITE_LOCK:
+            for attempt in range(5):
+                try:
+                    return super().commit()
+                except sqlite3.OperationalError as e:
+                    if 'locked' in str(e).lower() and attempt < 4:
+                        time.sleep(0.1 * (attempt + 1)); continue
+                    raise
+
 def db():
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row; return c
+    c = sqlite3.connect(DB, factory=_Conn, timeout=5.0)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=5000")
+    c.execute("PRAGMA synchronous=FULL")
+    return c
 
 def now(): return datetime.datetime.now().isoformat(timespec='seconds')
 
@@ -523,6 +551,48 @@ CAPTURE_MAP = {  # guide (stage,seq) -> durable member event: the answer becomes
  ('post_hcp',14):dict(attr='Materials preference', kind='K', grp=None, fan=False),
 }
 _HCP_ENT = dict(attr='Next HCP appointment', kind='E', grp=None, fan=False)   # any sched='hcp' question
+BACKUP_DIR = os.environ.get('DB_BACKUP_DIR', os.path.join(os.path.dirname(os.path.abspath(DB)), 'db-backups'))
+
+def _integrity_guard():
+    """Bridge safety net (Stage 0): on boot verify the DB isn't corrupt. If it is,
+    preserve the corrupt file aside (never destructive) and restore the newest
+    snapshot that itself passes quick_check. Snapshots are written hourly by the
+    backup job into BACKUP_DIR (same bucket, /data/db-backups in prod)."""
+    try:
+        corrupt = False; detail = None
+        try:
+            c = sqlite3.connect(DB, timeout=5.0)
+            try:
+                r = c.execute("PRAGMA quick_check").fetchone()
+            finally:
+                c.close()
+            if not (r and str(r[0]).lower() == 'ok'): corrupt = True; detail = (r and r[0])
+        except sqlite3.DatabaseError as e:            # severe corruption makes quick_check itself raise
+            corrupt = True; detail = str(e)
+        if not corrupt:
+            return
+        print('FATAL: app.db failed integrity check (%r) — attempting snapshot restore' % (detail,))
+        snaps = sorted(f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')) if os.path.isdir(BACKUP_DIR) else []
+        good = None
+        for f in reversed(snaps):                       # newest first
+            p = os.path.join(BACKUP_DIR, f)
+            try:
+                cc = sqlite3.connect(p, timeout=5.0)
+                rr = cc.execute("PRAGMA quick_check").fetchone(); cc.close()
+                if rr and str(rr[0]).lower() == 'ok': good = p; break
+            except Exception: continue
+        if not good:
+            print('CRITICAL: no good snapshot in %s — serving as-is; investigate NOW' % BACKUP_DIR); return
+        import shutil
+        aside = DB + '.corrupt-' + datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        try: shutil.copyfile(DB, aside)
+        except Exception as e: print('WARN: could not preserve corrupt DB aside:', e)
+        shutil.copyfile(good, DB)
+        print('RESTORED app.db from snapshot %s (corrupt copy kept at %s)' % (good, aside))
+    except Exception as e:
+        print('integrity guard skipped:', e)
+_integrity_guard()
+
 def _capture_startup():
     """Log-only sanity: every CAPTURE_MAP key must be a live question. Plus one additive index (idempotent)."""
     try:
