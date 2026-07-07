@@ -367,6 +367,18 @@ tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e
 .pill .n{font:var(--fw-heavy) 17px/1 var(--font);font-variant-numeric:tabular-nums;color:var(--ink)}
 .pill .l{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-top:3px;white-space:nowrap}
 .pill.brand .n{color:var(--brand)}.pill.good .n{color:var(--good)}
+/* Work Log */
+.wlnav{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.wlnav b{font-size:var(--fs-md)}
+.wlsum{display:flex;gap:14px;flex-wrap:wrap;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:7px 12px;margin-bottom:10px;font-size:var(--fs-sm)}
+.wlsum b{color:var(--ink);font-variant-numeric:tabular-nums}
+.wlsearch{margin-bottom:10px}
+.wlsearch input{width:100%;max-width:440px;padding:8px 10px;border:1px solid var(--line-2);border-radius:var(--r);font:inherit}
+#wlres{margin-top:4px}
+.hist.wl{max-height:none}
+.wlrow{padding:3px 0;line-height:1.5}
+.wlt{display:inline-block;min-width:42px;color:var(--faint);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)}
+.wlqa{margin-left:12px;font-size:var(--fs-sm);padding:1px 0}
 @media(max-width:560px){.pstat .sch{max-width:150px}.pill{min-width:44px;padding:3px 7px}.pill .n{font-size:15px}}</style></head><body>
 <header><h1>📞 My Members</h1><span class="sp"></span><span class="me">__ME__</span></header>
 <div class="wrap">
@@ -375,9 +387,9 @@ tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e
 <div id="list" class="panel">Loading…</div>
 </div><div class="toast" id="toast"></div>
 <script>__JSC__
-let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[];
+let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[],WLDAY=null,WLSTO=null;
 const SMS_ENABLED=true; // texting ON — unbranded texts, no MLR required
-const VIEWS=[['queue','📋 To call'],['done','✅ Done today']];  // callbacks ride in the ⭐ Priority band at the top of To call
+const VIEWS=[['queue','📋 To call'],['worklog','📓 Work Log']];  // callbacks ride in the ⭐ Priority band at the top of To call
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
 let _TC=null,_SUM=null;
@@ -396,7 +408,7 @@ async function punchClock(){const name=prompt('Type your name to sign this punch
  toast(r.action==='in'?'🕐 Punched in — on the clock':'🕐 Punched out — '+r.hours_today+'h today');loadTimecard();}
  catch(e){toast('Punch failed — try again');}}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
- $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
+ $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;WLDAY=null;load();});}
 function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
   rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
    return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
@@ -406,12 +418,8 @@ function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"
    <td>${(x.quals||'').split(';').filter(Boolean).slice(0,2).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</td></tr>
    <tr style="display:none" data-d="${x.member_id}"><td colspan="11"></td></tr>`;}).join('')+'</table></div>';}
 async function load(){tabs();const L=$('list');
+ if(VIEW==='worklog')return renderWorkLog();
  const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
- if(VIEW==='done'){
-  if(!r.rows.length){L.innerHTML='<span class="muted">Nothing here yet.</span>';return;}
-  L.innerHTML=`<table class="sheet"><tr><th>Member</th><th>Age</th><th>St</th><th>Disposition</th><th>When</th></tr>`+
-   r.rows.map(x=>`<tr><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td><td>${esc(x.disposition)}</td><td class="muted">${x.ts.slice(11,16)}</td></tr>`).join('')+'</table>'+pager(r);
-  wire(r);return;}
  // Priority band: ALL scheduled callbacks (due + upcoming) ride at the top of the To-call list until worked
  let pri=[];
  if(VIEW==='queue'&&PAGE===0){try{const p=await api('/api/adv/list?view=priority&page=0');pri=p.rows||[];}catch(e){}}
@@ -545,6 +553,39 @@ async function saveOutcome(){
   document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
   savedBanner(d);   // stay on the card — advocate navigates with the buttons or tabs
  }finally{BUSY=false;}}
+// ---------------- Work Log (time-ordered day review) ----------------
+async function renderWorkLog(){const L=$('list');L.innerHTML='<span class="muted">Loading…</span>';
+ let w;try{w=await api('/api/adv/worklog'+(WLDAY?('?day='+WLDAY):''));}catch(e){L.innerHTML='<span class="muted">Could not load the log.</span>';return;}
+ WLDAY=w.day;
+ const label=new Date(w.day+'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+ const isToday=w.day===w.today,s=w.summary||{};
+ const nav=`<div class="wlnav"><button class="sec" onclick="wlGo('${w.prev}')">‹ Prev</button><b>${esc(label)}${isToday?' · Today':''}</b><button class="sec" ${w.next?'':'disabled'} onclick="wlGo('${w.next}')">Next ›</button>${isToday?'':`<button class="link" onclick="wlGo('${w.today}')">jump to today</button>`}</div>`;
+ const sum=`<div class="wlsum"><span><b>${w.hours||0}h</b> clocked</span><span><b>${s.calls||0}</b> calls</span><span><b>${s.connected||0}</b> connected</span><span><b>${s.forms||0}</b> forms</span>${w.sched_text?`<span class="muted">${esc(w.sched_text)}</span>`:''}</div>`;
+ const search=`<div class="wlsearch"><input id="wlq" placeholder="🔎 Find someone you contacted — name, phone, or ID" autocomplete="off"><div id="wlres"></div></div>`;
+ const body=w.events.length?('<div class="hist wl">'+w.events.map(wlRow).join('')+'</div>'):'<div class="muted" style="padding:10px 2px">No activity logged on this day.</div>';
+ L.innerHTML='<div id="wlreview"></div>'+nav+sum+search+body;
+ const q=$('wlq');if(q)q.addEventListener('input',e=>{clearTimeout(WLSTO);const v=e.target.value;WLSTO=setTimeout(()=>wlSearch(v),250);});
+ L.querySelectorAll('[data-rev]').forEach(el=>el.onclick=()=>openReview(el.dataset.rev));}
+function wlGo(day){if(!day||day==='null')return;WLDAY=day;renderWorkLog();}
+function wlRow(e){
+ if(e.kind==='punch'){const ot=e.on_time===1?' · on time':(e.on_time===0?' · off-schedule':'');
+  return `<div class="wlrow"><span class="wlt">${e.t}</span> 🕐 Punched <b>${e.action==='in'?'in':'out'}</b>${e.signature?' — '+esc(e.signature):''}<span class="muted">${ot}</span></div>`;}
+ const cls=e.connected?'C':(e.outcome==='Bad Number'?'B':(/Voicemail|No Answer/.test(e.outcome||'')?'A':'O'));
+ const note=e.note?' <span class="muted">— '+esc(String(e.note).slice(0,80))+'</span>':'';
+ return `<div class="wlrow"><span class="wlt">${e.t}</span> <span class="dot ${cls}">${e.kind==='form'?'📋':'📞'}</span> <a class="linky" data-rev="${escA(e.member_id)}">${esc(e.member||e.member_id)}</a> — ${esc(e.outcome||'')}${note}</div>`;}
+async function wlSearch(v){const R=$('wlres');if(!R)return;v=(v||'').trim();
+ if(v.length<2){R.innerHTML='';return;}
+ let r;try{r=await api('/api/adv/worklog_search?q='+encodeURIComponent(v));}catch(e){return;}
+ R.innerHTML=r.rows.length?r.rows.map(x=>`<div class="wlrow"><a class="linky" data-rev="${escA(x.member_id)}">${esc((x.first||'')+' '+(x.last||''))}</a> <span class="muted">${esc(x.city||'')} ${esc(x.state||'')}${x.last_contact?' · last '+x.last_contact:''}${x.last_outcome?' · '+esc(x.last_outcome):''}</span></div>`).join(''):'<div class="muted" style="padding:6px 2px">No matches among your contacts.</div>';
+ R.querySelectorAll('[data-rev]').forEach(el=>el.onclick=()=>openReview(el.dataset.rev));}
+async function openReview(mid){const box=$('wlreview');if(!box)return;
+ box.innerHTML='<div class="mdetail"><span class="muted">Loading…</span></div>';box.scrollIntoView({behavior:'smooth',block:'start'});
+ let d;try{d=await api('/api/adv/member_review/'+encodeURIComponent(mid));}catch(e){box.innerHTML='<div class="mdetail muted">You can only review people you contacted.</div>';return;}
+ const m=d.member||{};
+ const hist=(d.hist||[]).map(h=>`<div><span class="dot ${h.cls}">•</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc(String(h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">no history</span>';
+ const calls=(d.calls||[]).map(x=>`<div><span class="muted">${esc(x.when)}</span> — ${esc(x.disposition)}${x.note?' · '+esc(String(x.note).slice(0,80)):''}</div>`).join('')||'<span class="muted">no calls by you</span>';
+ const forms=(d.forms||[]).map(f=>`<div style="margin-top:6px"><b>Form — ${esc(f.stage||'')}</b> <span class="muted">${esc(f.when)}</span>`+(f.qa||[]).map(a=>`<div class="wlqa"><span class="muted">${esc(a.prompt)}</span> → ${esc(a.answer)}</div>`).join('')+'</div>').join('')||'<span class="muted">no forms by you</span>';
+ box.innerHTML=`<div class="mdetail"><div class="row"><span class="big">${esc((m.first||'')+' '+(m.last||''))}</span><span style="flex:1"></span><button class="link" onclick="$('wlreview').innerHTML=''">← back to log</button></div><div class="muted">${esc(m.city||'')} ${esc(m.state||'')}${m.age!=null?' · '+m.age:''} · ${esc(m.phone||'')} · ID ${esc(m.member_id||'')}</div>${m.quals?`<div style="margin:4px 0">${String(m.quals).split(';').filter(Boolean).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</div>`:''}<div class="lbl" style="margin-top:8px">Your calls</div><div class="hist">${calls}</div><div class="lbl" style="margin-top:8px">Timeline</div><div class="hist">${hist}</div><div class="lbl" style="margin-top:8px">Your completed forms</div><div class="hist">${forms}</div></div>`;}
 tally();load();loadTimecard();setInterval(loadTimecard,60000);setInterval(()=>{if(_TC&&_TC.on_clock)renderDeck();},30000);
 </script></body></html>"""
 ADVOCATE_HTML = ADVOCATE_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)

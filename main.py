@@ -1005,12 +1005,22 @@ def _parse_utc(ts):
 def _overlap_h(a,b,s,e):
     lo=a if a>s else s; hi=b if b<e else e
     return max(0.0,(hi-lo).total_seconds()/3600.0)
-def _worked_hours(c, email, tzname):
-    """Hours inside today's local-day window: pair in→out, CLIP each shift to [today 00:00, +1d).
-    All arithmetic in UTC, so DST offset changes and cross-midnight/forgot-to-punch-out shifts are correct."""
-    tz=_tz(tzname); utc=datetime.timezone.utc; now_utc=datetime.datetime.now(utc)
-    ds=datetime.datetime.now(tz).replace(hour=0,minute=0,second=0,microsecond=0).astimezone(utc)
-    de=ds+datetime.timedelta(days=1)
+def _local_day_bounds_utc(tzname, day_iso=None):
+    """[start,end) UTC datetimes bounding the given local calendar day (default today)."""
+    tz=_tz(tzname); utc=datetime.timezone.utc
+    d=None
+    if day_iso:
+        try: d=datetime.date.fromisoformat(str(day_iso)[:10])
+        except (ValueError,TypeError): d=None
+    if d is None: d=datetime.datetime.now(tz).date()
+    ds=datetime.datetime(d.year,d.month,d.day,tzinfo=tz).astimezone(utc)
+    return ds, ds+datetime.timedelta(days=1)
+def _worked_hours_day(c, email, tzname, day_iso=None):
+    """Hours inside the given local day (default today): pair in→out, CLIP each shift to
+    [day 00:00, +1d). All arithmetic in UTC, so DST offset changes and cross-midnight/
+    forgot-to-punch-out shifts are correct."""
+    utc=datetime.timezone.utc; now_utc=datetime.datetime.now(utc)
+    ds,de=_local_day_bounds_utc(tzname, day_iso)
     total=0.0; open_utc=None
     for r in c.execute("SELECT action,ts FROM time_punches WHERE actor=? ORDER BY id",(email,)):
         dt=_parse_utc(r['ts'])
@@ -1019,6 +1029,7 @@ def _worked_hours(c, email, tzname):
         elif r['action']=='out' and open_utc: total+=_overlap_h(open_utc,dt,ds,de); open_utc=None
     if open_utc: total+=_overlap_h(open_utc,now_utc,ds,de)   # still on the clock
     return round(total,2)
+def _worked_hours(c, email, tzname): return _worked_hours_day(c, email, tzname)
 def _punch_status(c, email):
     """on_clock from the LAST punch (matches /api/adv/timecard); display today's local in/out."""
     tzname=_sched_tz(c,email); today=datetime.datetime.now(_tz(tzname)).date().isoformat()
@@ -1066,6 +1077,93 @@ def timecard(req: Request):
     out['sched_text']=(_sched_text(s) if s else None)
     out['ot']=({'permitted':bool(s['ot_permitted']),'multiple':s['ot_multiple'],'hours':s['ot_hours']} if s else None)
     return out
+
+# ---------------- Work Log (advocate self-review) ----------------
+@app.get('/api/adv/worklog')
+def adv_worklog(req: Request, day: str=''):
+    """Time-ordered day log for the signed-in advocate: punches + their call/form
+    dispositions, bucketed by the advocate's schedule tz (default America/Denver)."""
+    u=who(req); need(u,'advocate'); c=db(); em=u['email']; tz=_sched_tz(c,em)
+    today=datetime.datetime.now(_tz(tz)).date().isoformat()
+    try: d=datetime.date.fromisoformat((day or today)[:10])
+    except (ValueError,TypeError): d=datetime.date.fromisoformat(today)
+    if d.isoformat()>today: d=datetime.date.fromisoformat(today)      # never the future
+    day=d.isoformat()
+    ds,de=_local_day_bounds_utc(tz,day)
+    lo=ds.replace(tzinfo=None).isoformat(); hi=de.replace(tzinfo=None).isoformat()   # dispositions.ts is naive-UTC
+    events=[]; calls=connected=forms=0
+    for r in c.execute("""SELECT d.ts,d.member_id,m.first,m.last,d.disposition,d.note,d.handle_secs
+        FROM dispositions d JOIN member_core m USING(member_id)
+        WHERE d.actor=? AND d.ts>=? AND d.ts<? ORDER BY d.ts""",(em,lo,hi)):
+        loc=_to_local(r['ts'],tz); disp=r['disposition'] or ''
+        isform=disp.startswith('Connected — Guide completed'); isconn=disp.startswith('Connected')
+        calls+=1; connected+=1 if isconn else 0; forms+=1 if isform else 0
+        events.append({'t':(loc.strftime('%H:%M') if loc else ''),'sort':(loc.isoformat() if loc else r['ts']),
+            'kind':('form' if isform else 'call'),'member_id':r['member_id'],
+            'member':(str(r['first'] or '')+' '+str(r['last'] or '')).strip(),'outcome':disp,'note':r['note'],
+            'handle_secs':r['handle_secs'],'connected':isconn,
+            'stage':((re.search(r'\((\w+)\)$',disp) or [None,''])[1] if isform else '')})
+    for r in c.execute("SELECT action,ts,on_time,signature FROM time_punches WHERE actor=? ORDER BY id",(em,)):
+        loc=_to_local(r['ts'],tz)
+        if not loc or loc.date().isoformat()!=day: continue
+        events.append({'t':loc.strftime('%H:%M'),'sort':loc.isoformat(),'kind':'punch',
+            'action':r['action'],'on_time':r['on_time'],'signature':r['signature']})
+    events.sort(key=lambda e:e['sort'])
+    s=_sched_row(c,em); prev=(d-datetime.timedelta(days=1)).isoformat(); nxt=(d+datetime.timedelta(days=1)).isoformat()
+    return {'day':day,'today':today,'prev':prev,'next':(nxt if nxt<=today else None),
+            'sched_text':(_sched_text(s) if s else None),'hours':_worked_hours_day(c,em,tz,day),
+            'summary':{'calls':calls,'connected':connected,'forms':forms},'events':events}
+
+@app.get('/api/adv/worklog_search')
+def adv_worklog_search(req: Request, q: str=''):
+    """Find a person THIS advocate contacted, by name / phone / member ID."""
+    u=who(req); need(u,'advocate'); c=db(); em=u['email']; q=(q or '').strip()
+    if len(q)<2: return {'rows':[]}
+    like='%'+q.replace('%','').replace('_','')+'%'
+    rows=c.execute("""SELECT m.member_id,m.first,m.last,m.city,m.state,
+        (SELECT d.ts FROM dispositions d WHERE d.member_id=m.member_id AND d.actor=? ORDER BY d.id DESC LIMIT 1) last_ts,
+        (SELECT d.disposition FROM dispositions d WHERE d.member_id=m.member_id AND d.actor=? ORDER BY d.id DESC LIMIT 1) last_outcome
+        FROM member_core m
+        WHERE m.member_id IN (SELECT member_id FROM dispositions WHERE actor=?
+            UNION SELECT bm.member_id FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=?)
+        AND (m.first LIKE ? OR m.last LIKE ? OR (m.first||' '||m.last) LIKE ? OR m.phone LIKE ? OR m.phone_last4 LIKE ? OR m.member_id LIKE ?)
+        ORDER BY last_ts DESC LIMIT 20""",(em,em,em,em,like,like,like,like,like,like)).fetchall()
+    tz=_sched_tz(c,em); out=[]
+    for r in rows:
+        loc=_to_local(r['last_ts'],tz) if r['last_ts'] else None
+        out.append({'member_id':r['member_id'],'first':r['first'],'last':r['last'],'city':r['city'],'state':r['state'],
+            'last_contact':(loc.strftime('%Y-%m-%d') if loc else None),'last_outcome':r['last_outcome']})
+    return {'rows':out}
+
+@app.get('/api/adv/member_review/{mid}')
+def adv_member_review(mid: str, req: Request):
+    """Read-only profile of a member this advocate has worked (phone masked). Ownership-gated;
+    NOT actionable like adv_open — lets them review past contacts even after the member is done."""
+    u=who(req); need(u,'advocate'); c=db(); em=u['email']
+    owned=(c.execute("SELECT 1 FROM dispositions WHERE actor=? AND member_id=? LIMIT 1",(em,mid)).fetchone()
+        or c.execute("SELECT 1 FROM batch_members bm JOIN batches b ON b.id=bm.batch_id WHERE b.advocate=? AND bm.member_id=? LIMIT 1",(em,mid)).fetchone())
+    if not owned: raise HTTPException(403,'not one of your contacts')
+    m=c.execute("SELECT * FROM member_core WHERE member_id=?",(mid,)).fetchone()
+    if not m: raise HTTPException(404,'no such member')
+    d=dict(m); ph=d.pop('phone',None); d['phone']='···'+((ph or '')[-4:])   # masked — review, not dial
+    tz=_sched_tz(c,em)
+    hist=[dict(h) for h in c.execute("SELECT date,event_type,detail,cls FROM comm_hist WHERE member_id=? ORDER BY date DESC, rowid DESC LIMIT 60",(mid,))]
+    calls=[]
+    for r in c.execute("SELECT ts,disposition,note,handle_secs FROM dispositions WHERE actor=? AND member_id=? ORDER BY id DESC LIMIT 40",(em,mid)):
+        loc=_to_local(r['ts'],tz)
+        calls.append({'when':(loc.strftime('%Y-%m-%d %H:%M') if loc else r['ts']),'disposition':r['disposition'],
+            'note':r['note'],'handle_secs':r['handle_secs']})
+    forms=[]
+    for fr in c.execute("""SELECT ts,served_at,disposition FROM dispositions
+        WHERE actor=? AND member_id=? AND disposition LIKE 'Connected — Guide completed%' ORDER BY id DESC LIMIT 20""",(em,mid)):
+        stage=(re.search(r'\((\w+)\)$',fr['disposition'] or '') or [None,''])[1]
+        lo=fr['served_at'] or (fr['ts'][:10]); hi=fr['ts'][:19]+'~'
+        qa=[{'prompt':a['prompt'],'answer':a['answer']} for a in c.execute(
+            """SELECT a.prompt,a.answer,COALESCE(g.seq,999) seq FROM answers a LEFT JOIN guide_items g ON g.id=a.question_id
+               WHERE a.actor=? AND a.member_id=? AND a.stage=? AND a.ts>=? AND a.ts<=? ORDER BY seq,a.id""",(em,mid,stage,lo,hi))]
+        loc=_to_local(fr['ts'],tz)
+        forms.append({'when':(loc.strftime('%Y-%m-%d %H:%M') if loc else fr['ts']),'stage':stage,'qa':qa})
+    return {'member':d,'hist':hist,'calls':calls,'forms':forms}
 
 @app.post('/api/dir/schedule')
 async def set_schedule(req: Request):
