@@ -48,6 +48,7 @@ def db():
 def now(): return datetime.datetime.now().isoformat(timespec='seconds')
 
 def who(req: Request):
+    _maybe_cleanup()                              # fire the one-time DNC cleanup on the first real request (Cloud Run only gives background threads CPU when a request is in flight)
     email = req.headers.get('X-Goog-Authenticated-User-Email', '')
     email = email.split(':')[-1].lower()
     if not email and DEV: email = (req.query_params.get('as') or '').lower()
@@ -626,11 +627,24 @@ def _cleanup_dnc():
     except Exception as e:
         print('DNC cleanup skipped:', e)
 
+_cleanup_ran = False
+_cleanup_gate = threading.Lock()
+def _maybe_cleanup():
+    """Run the one-time DNC cleanup once per instance, in a background thread (off the request
+    path). Called from who() on the first request AND by a timer — whichever gets CPU first."""
+    global _cleanup_ran
+    with _cleanup_gate:
+        if _cleanup_ran: return
+        _cleanup_ran = True
+    try:
+        threading.Thread(target=_cleanup_dnc, daemon=True).start()
+    except Exception as e:
+        print('DNC cleanup not started:', e)
 def _start_cleanup_dnc():
     try:
-        t = threading.Timer(20.0, _cleanup_dnc); t.daemon = True; t.start()   # background; idempotent; ~no-op after first run
+        t = threading.Timer(20.0, _maybe_cleanup); t.daemon = True; t.start()   # timer fallback; who() also triggers it on the first real request
     except Exception as e:
-        print('DNC cleanup not scheduled:', e)
+        print('DNC cleanup timer not scheduled:', e)
 _start_cleanup_dnc()
 
 def _capture_startup():
