@@ -1082,12 +1082,11 @@ def timecard(req: Request):
     out['ot']=({'permitted':bool(s['ot_permitted']),'multiple':s['ot_multiple'],'hours':s['ot_hours']} if s else None)
     return out
 
-# ---------------- Work Log (advocate self-review) ----------------
-@app.get('/api/adv/worklog')
-def adv_worklog(req: Request, day: str=''):
-    """Time-ordered day log for the signed-in advocate: punches + their call/form
-    dispositions, bucketed by the advocate's schedule tz (default America/Denver)."""
-    u=who(req); need(u,'advocate'); c=db(); em=u['email']; tz=_sched_tz(c,em)
+# ---------------- Work Log (advocate self-review; director oversight) ----------------
+def _worklog(c, em, tz, day=''):
+    """Time-ordered day log for advocate `em`: punches + their call/form dispositions,
+    bucketed by their schedule tz (default America/Denver). Shared by the advocate's own
+    Work Log and the director monitor — all times localized (Mountain by default)."""
     today=datetime.datetime.now(_tz(tz)).date().isoformat()
     try: d=datetime.date.fromisoformat((day or today)[:10])
     except (ValueError,TypeError): d=datetime.date.fromisoformat(today)
@@ -1117,6 +1116,19 @@ def adv_worklog(req: Request, day: str=''):
     return {'day':day,'today':today,'prev':prev,'next':(nxt if nxt<=today else None),
             'sched_text':(_sched_text(s) if s else None),'hours':_worked_hours_day(c,em,tz,day),
             'summary':{'calls':calls,'connected':connected,'forms':forms},'events':events}
+
+@app.get('/api/adv/worklog')
+def adv_worklog(req: Request, day: str=''):
+    u=who(req); need(u,'advocate'); c=db()
+    return _worklog(c, u['email'], _sched_tz(c,u['email']), day)
+
+@app.get('/api/dir/worklog')
+def dir_worklog(req: Request, email: str='', day: str=''):
+    """Director oversight: the exact Work Log an advocate sees for their own day."""
+    u=who(req); need(u,'director'); c=db(); em=(email or '').lower().strip()
+    if not c.execute("SELECT 1 FROM users WHERE email=? AND role='advocate'",(em,)).fetchone():
+        raise HTTPException(400,'not an advocate')
+    return _worklog(c, em, _sched_tz(c,em), day)
 
 @app.get('/api/adv/worklog_search')
 def adv_worklog_search(req: Request, q: str=''):

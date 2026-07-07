@@ -274,7 +274,7 @@ async function loadMembers(){const B=$('tabbody');
    <div style="margin:4px 0">${(d.member.quals||'').split(';').filter(Boolean).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')} ${(d.member.sflags||'').split(';').filter(Boolean).map(f=>`<span class="sflag">${esc(f)}</span>`).join('')}</div>
    ${d.batches.length?'<div class="lbl">Batches</div>'+d.batches.map(b=>`<div style="font-size:12px">#${b.id} ${esc(b.name)} → ${esc(b.advocate)} · ${b.state}/${b.stage||''} ${b.callback_at?'· next: '+b.callback_at.slice(0,16):''} ${b.hcp_date?'· HCP '+b.hcp_date:''}</div>`).join(''):''}
    ${d.answers.length?'<div class="lbl" style="margin-top:6px">Guide answers</div>'+d.answers.slice(0,8).map(a=>`<div style="font-size:12px"><span class="muted">${a.ts.slice(5,16)} ${a.stage}</span> ${esc(a.prompt.slice(0,50))} → <b>${esc(a.answer)}</b></div>`).join(''):''}
-   <div class="lbl" style="margin-top:6px">History</div>${d.hist.map(h=>`<div style="font-size:12px"><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,90))}</div>`).join('')}</div>`;}));}
+   <div class="lbl" style="margin-top:6px">History</div>${d.hist.map(h=>`<div style="font-size:12px"><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${esc(h.date||'—')}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,90))}</div>`).join('')}</div>`;}));}
 async function openTab(k){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.t===k));const B=$('tabbody');B.innerHTML='<span class="muted">loading…</span>';
  if(k==='members'){await loadMembers();return;}
  if(k==='batches'){const bs=await api('/api/dir/batches');
@@ -454,7 +454,7 @@ async function openRow(mid){const L=$('list');
    <button class="callbtn" style="background:#2563eb" onclick="copyText()">💬 Text</button>
    <span class="muted" style="font-size:11px">Google Voice opens in a side window · 💬 copies the number → paste it in the To field · every click is logged</span></div>
   <div class="lbl">Call log</div>
-  <div class="hist">${(M.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>'}</div>
+  <div class="hist">${(M.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${esc(h.date||'—')}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,100))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>'}</div>
   <div class="row" style="margin-top:12px"><span class="lbl" style="min-width:auto">Connected? Open the form:</span>
    <span class="seg" id="stageSeg">${['initial','pre_hcp','post_hcp'].map(s=>`<button data-st="${s}">${s==='initial'?'Initial':s==='pre_hcp'?'Pre-HCP':'Post-HCP'}</button>`).join('')}</span>
    <span class="muted" style="font-size:11px">tap to open the discussion form · tap again to close · scheduled type: <b>${esc((M.stage_title||M.stage).split('(')[0])}</b></span></div>

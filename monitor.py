@@ -8,7 +8,8 @@ Wire-in is a single additive line at the bottom of main.py: app.include_router(r
 import datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from main import who, need, db, now, _punch_status, _ot_status, _sched_row, _sched_text   # defined in main before its bottom-of-file
+from main import (who, need, db, now, _punch_status, _ot_status, _sched_row, _sched_text,
+                  _to_local, DEFAULT_TZ, _tz, _local_day_bounds_utc)   # defined in main before its bottom-of-file
 from ui import CSS, JS_COMMON                 # include line triggers this import -> no circular trap
 
 router = APIRouter()
@@ -26,15 +27,25 @@ def _within(ts, ref, secs):
         return False
 
 
+def _hm(ts):
+    """Local (Mountain) HH:MM for a naive-UTC or UTC-aware ISO ts; '' if none.
+    dispositions/activity ts are naive-UTC (server clock); _to_local treats naive as UTC."""
+    loc = _to_local(ts, DEFAULT_TZ)
+    return loc.strftime('%H:%M') if loc else ''
+
+
 @router.get('/api/dir/monitor')
 def monitor_data(req: Request):
     """Aggregate (today, all advocates) + per-advocate rollup. Read-only; no audit write."""
     u = who(req); need(u, 'director'); c = db()
-    ref = now(); today = ref[:10]; like = today + '%'
+    ref = now()
+    ds, de = _local_day_bounds_utc(DEFAULT_TZ, None)          # today's MOUNTAIN-day window as UTC bounds
+    lo = ds.replace(tzinfo=None).isoformat(); hi = de.replace(tzinfo=None).isoformat()   # ts is naive-UTC
+    today = datetime.datetime.now(_tz(DEFAULT_TZ)).date().isoformat()                     # Mountain calendar day
 
-    # --- aggregate outcomes (all actors, today) — computed independently of the roster ---
+    # --- aggregate outcomes (all actors, today MTN) — computed independently of the roster ---
     agg_disp = {r['disposition']: r['n'] for r in c.execute(
-        "SELECT disposition, COUNT(*) n FROM dispositions WHERE ts LIKE ? GROUP BY disposition", (like,))}
+        "SELECT disposition, COUNT(*) n FROM dispositions WHERE ts>=? AND ts<? GROUP BY disposition", (lo, hi))}
     calls_today = sum(agg_disp.values())
     connected_today = sum(v for k, v in agg_disp.items() if str(k).startswith('Connected'))
 
@@ -43,8 +54,8 @@ def monitor_data(req: Request):
     for a in c.execute("SELECT email, display FROM users WHERE role='advocate' AND active=1 ORDER BY display"):
         em = a['email']
         disp = {r['disposition']: r['n'] for r in c.execute(
-            "SELECT disposition, COUNT(*) n FROM dispositions WHERE actor=? AND ts LIKE ? GROUP BY disposition",
-            (em, like))}
+            "SELECT disposition, COUNT(*) n FROM dispositions WHERE actor=? AND ts>=? AND ts<? GROUP BY disposition",
+            (em, lo, hi))}
         ctoday = sum(v for k, v in disp.items() if str(k).startswith('Connected'))
         r = c.execute("""SELECT
             SUM(CASE WHEN bm.state='pending'  THEN 1 ELSE 0 END) pending,
@@ -69,13 +80,14 @@ def monitor_data(req: Request):
             'in_ontime': ps['in_ontime'], 'out_ontime': ps['out_ontime'],
             'hours_today': ps['hours'], 'sched_text': (_sched_text(sch) if sch else None),
             'schedule': (dict(sch) if sch else None), 'ot': ot,
-            'calls_today': sum(disp.values()), 'connected_today': ctoday, 'last_activity': last or '',
+            'calls_today': sum(disp.values()), 'connected_today': ctoday,
+            'last_activity': last or '', 'last_local': _hm(last),
             'dispositions': disp,
             'pending': r['pending'] or 0, 'served': r['served'] or 0,
             'callbacks': r['callbacks'] or 0, 'done_open': r['done'] or 0, 'due_now': due,
         })
 
-    # --- chronological call log (today, all advocates), oldest first ---
+    # --- chronological call log (today MTN, all advocates), oldest first ---
     log = [dict(x) for x in c.execute("""
         SELECT d.ts, d.actor, COALESCE(u.display, d.actor) display, d.member_id,
                TRIM(COALESCE(m.first,'') || ' ' || COALESCE(m.last,'')) name,
@@ -83,7 +95,8 @@ def monitor_data(req: Request):
         FROM dispositions d
         LEFT JOIN member_core m USING(member_id)
         LEFT JOIN users u ON u.email = d.actor
-        WHERE d.ts LIKE ? ORDER BY d.ts LIMIT 200""", (like,))]
+        WHERE d.ts>=? AND d.ts<? ORDER BY d.ts LIMIT 200""", (lo, hi))]
+    for x in log: x['t'] = _hm(x['ts'])                       # localized (Mountain) HH:MM
 
     return {
         'as_of': ref, 'date': today,
@@ -146,6 +159,18 @@ MONITOR_HTML = ("""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
   <h3>Advocates</h3>
   <div class="advcards" id="advboxes"></div>
  </div>
+ <div class="panel">
+  <h3>📓 Work log <span class="muted">· exactly what the advocate sees · times MTN</span></h3>
+  <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+   <select id="wladv" onchange="WLDAY='';wlLoad()"></select>
+   <button class="sec" id="wlprev">‹ Prev</button>
+   <b id="wllabel">—</b>
+   <button class="sec" id="wlnext">Next ›</button>
+   <button class="link" id="wltoday">today</button>
+   <span class="muted" id="wlsum"></span>
+  </div>
+  <div id="wlbody" style="margin-top:10px"></div>
+ </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>__JSC__
@@ -174,13 +199,13 @@ function render(d){
  $('aggbar').innerHTML=pb.empty?'<div style="background:var(--faint);width:100%">no calls yet today</div>':pb.bar;
  $('aggleg').innerHTML=pb.leg;
  $('agglog').innerHTML=ag.log.length?ag.log.slice().reverse().map(x=>{
-  const t=(x.ts||'').slice(11,16), who=(x.name||'').trim()||x.member_id;
+  const t=x.t||'', who=(x.name||'').trim()||x.member_id;
   return `<tr><td class="muted">${t}</td><td>${esc(x.display)}</td><td>${esc(who)}</td>`
    +`<td><span class="dot ${dclass(x.disposition)}">●</span> ${esc(x.disposition)}</td>`
    +`<td class="muted">${esc((x.note||'').slice(0,60))}</td></tr>`;}).join('')
   :'<tr><td colspan="5" class="muted">No calls logged today.</td></tr>';
  $('advboxes').innerHTML=d.advocates.map(a=>{
-  const pbx=piebar(a.dispositions), last=a.last_activity?a.last_activity.slice(11,16):'—';
+  const pbx=piebar(a.dispositions), last=a.last_local||'—';
   return `<div class="advcard">
    <div style="display:flex;justify-content:space-between;align-items:center">
     <b>${a.online?'🟢':'⚪'} ${esc(a.display)}</b><span class="muted">last ${last}</span></div>
@@ -205,7 +230,29 @@ function render(d){
    +`<td>${a.punch_out?esc(a.punch_out)+(a.out_ontime===0?' ⚠':''):(a.punched_in?'on clock':'—')}</td>`
    +`<td><b>${a.hours_today}h</b></td><td>${otc}</td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">No advocates.</td></tr>';
  if($('schadv')&&!$('schadv').options.length)initSchForm(d);
+ initWl(d);
 }
+// --- per-advocate Work log (the director's view of what each advocate sees) ---
+let WLDAY='',_WL=null;
+function initWl(d){const sel=$('wladv');if(!sel||sel.options.length)return;
+ sel.innerHTML=d.advocates.map(a=>`<option value="${escA(a.email)}">${esc(a.display)}</option>`).join('')||'<option value="">(no advocates)</option>';
+ $('wlprev').onclick=()=>wlStep('prev');$('wlnext').onclick=()=>wlStep('next');$('wltoday').onclick=()=>wlStep('today');
+ wlLoad();}
+async function wlLoad(){const sel=$('wladv');const em=sel&&sel.value;if(!em)return;
+ let w;try{w=await api('/api/dir/worklog?email='+encodeURIComponent(em)+(WLDAY?'&day='+encodeURIComponent(WLDAY):''));}
+ catch(e){$('wlbody').innerHTML='<span class="muted">Could not load.</span>';return;}
+ _WL=w;WLDAY=w.day;
+ $('wllabel').textContent=new Date(w.day+'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(w.day===w.today?' · Today':'');
+ const s=w.summary||{};$('wlsum').textContent=`${w.hours||0}h · ${s.calls||0} calls · ${s.connected||0} conn · ${s.forms||0} forms`+(w.sched_text?' · '+w.sched_text:'');
+ $('wlnext').disabled=!w.next;
+ $('wlbody').innerHTML=w.events.length?('<div class="hist" style="max-height:none">'+w.events.map(wlRowM).join('')+'</div>'):'<div class="muted">No activity on this day.</div>';}
+function wlStep(k){if(!_WL)return;if(k==='prev')WLDAY=_WL.prev;else if(k==='next'){if(!_WL.next)return;WLDAY=_WL.next;}else WLDAY=_WL.today;wlLoad();}
+function wlRowM(e){
+ if(e.kind==='punch'){const ot=e.on_time===1?' · on time':(e.on_time===0?' · off-schedule':'');
+  return `<div style="padding:3px 0"><span class="muted" style="display:inline-block;min-width:46px">${e.t}</span> 🕐 Punched <b>${e.action}</b>${e.signature?' — '+esc(e.signature):''}<span class="muted">${ot}</span></div>`;}
+ const cls=e.connected?'C':(e.outcome==='Bad Number'?'B':(/Voicemail|No Answer/.test(e.outcome||'')?'A':'O'));
+ const note=e.note?' <span class="muted">— '+esc(String(e.note).slice(0,80))+'</span>':'';
+ return `<div style="padding:3px 0"><span class="muted" style="display:inline-block;min-width:46px">${e.t}</span> <span class="dot ${cls}">${e.kind==='form'?'📋':'📞'}</span> ${esc(e.member||e.member_id)} — ${esc(e.outcome||'')}${note}</div>`;}
 function initSchForm(d){
  $('schdays').innerHTML=[['1','M'],['2','Tu'],['3','W'],['4','Th'],['5','F'],['6','Sa'],['7','Su']].map(x=>`<label style="margin-right:4px"><input type="checkbox" value="${x[0]}"> ${x[1]}</label>`).join('');
  $('schadv').innerHTML=d.advocates.map(a=>`<option value="${escA(a.email)}">${esc(a.display)}</option>`).join('')||'<option value="">(no advocates)</option>';
