@@ -572,13 +572,14 @@ def adv_list(req: Request, view: str='queue', page: int=0):
         tot=c.execute("SELECT COUNT(*) n FROM dispositions WHERE actor=? AND ts LIKE ?",(email,now()[:10]+'%')).fetchone()['n']
         out=[dict(r) for r in rows]
     else:
-        # 'due'/Priority holds any due callback whether or not it's been opened (state served after open),
-        # so a callback stays at the top until an outcome is logged; 'queue' excludes those due-callbacks
-        # so a member is never listed in both bands.
-        DUE="bm.callback_at IS NOT NULL AND replace(bm.callback_at,'T',' ')<=datetime('now','localtime')"
-        w={"due":f"bm.state IN('callback','served') AND {DUE}",
-           "callbacks":"bm.state='callback' AND replace(bm.callback_at,'T',' ')>datetime('now','localtime')",
-           "queue":f"bm.state IN('pending','served') AND NOT({DUE})"}.get(view)
+        # 'priority' = every scheduled callback (due or upcoming), whether or not it's been opened
+        # (state served after open) — these ride at the top of the advocate's list until an outcome is
+        # logged. 'queue' is the plain to-call list: pending/served with NO scheduled callback, so a
+        # member is never in both bands. ('due'/'callbacks' kept for internal/back-compat, no UI tab.)
+        w={"priority":"bm.state IN('callback','served') AND bm.callback_at IS NOT NULL",
+           "queue":"bm.state IN('pending','served') AND bm.callback_at IS NULL",
+           "due":"bm.state IN('callback','served') AND bm.callback_at IS NOT NULL AND replace(bm.callback_at,'T',' ')<=datetime('now','localtime')",
+           "callbacks":"bm.state='callback' AND replace(bm.callback_at,'T',' ')>datetime('now','localtime')"}.get(view)
         if not w: raise HTTPException(400,'bad view')
         base=f"""FROM batch_members bm JOIN batches b ON b.id=bm.batch_id JOIN member_core m ON m.member_id=bm.member_id
             WHERE b.advocate=? AND b.status='open' AND {w}"""

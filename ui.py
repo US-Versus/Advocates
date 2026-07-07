@@ -358,7 +358,7 @@ tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e
 <script>__JSC__
 let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[],RUNQ=[],RUNI=0,RUNNING=false;
 const SMS_ENABLED=true; // texting ON — unbranded texts, no MLR required
-const VIEWS=[['due','⏰ Due now'],['queue','📋 To call'],['callbacks','📅 Callbacks set'],['done','✅ Done today']];
+const VIEWS=[['queue','📋 To call'],['done','✅ Done today']];  // callbacks ride in the ⭐ Priority band at the top of To call
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
 async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
@@ -379,13 +379,14 @@ async function load(){tabs();const L=$('list');
   L.innerHTML=`<table class="sheet"><tr><th>Member</th><th>Age</th><th>St</th><th>Disposition</th><th>When</th></tr>`+
    r.rows.map(x=>`<tr><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td><td>${esc(x.disposition)}</td><td class="muted">${x.ts.slice(11,16)}</td></tr>`).join('')+'</table>'+pager(r);
   wire(r);return;}
- // Priority band: on the main queue view, surface callbacks due NOW at the top (state=callback & due)
+ // Priority band: ALL scheduled callbacks (due + upcoming) ride at the top of the To-call list until worked
  let pri=[];
- if(VIEW==='queue'&&PAGE===0){try{const p=await api('/api/adv/list?view=due&page=0');pri=p.rows||[];}catch(e){}}
- if(!r.rows.length&&!pri.length){L.innerHTML='<span class="muted">'+(VIEW==='due'?'Nothing due right now — check 📋 To call.':'Nothing here yet.')+'</span>';return;}
+ if(VIEW==='queue'&&PAGE===0){try{const p=await api('/api/adv/list?view=priority&page=0');pri=p.rows||[];}catch(e){}}
+ if(!r.rows.length&&!pri.length){L.innerHTML='<span class="muted">All caught up — no members to call right now.</span>';return;}
  LASTROWS=[...pri.map(x=>x.member_id),...r.rows.map(x=>x.member_id)];   // priority members dial first
  let html=`<div class="row" style="margin-bottom:8px"><button class="good" onclick="startRun()">⚡ Rapid-dial next ${Math.min(5,LASTROWS.length)}</button><span class="muted" style="font-size:11px">text · dial · one-tap outcome · auto-advance through the queue</span></div>`;
- if(pri.length){html+=`<div class="prihdr">⭐ Priority — ${pri.length} callback${pri.length>1?'s':''} due now</div>`+memberTable(pri,true);}
+ if(pri.length){const nd=pri.filter(x=>x.callback_at&&x.callback_at<=new Date().toISOString()).length;
+  html+=`<div class="prihdr">⭐ Priority — ${pri.length} scheduled callback${pri.length>1?'s':''}${nd?` · ${nd} due now`:''}</div>`+memberTable(pri,true);}
  html+=(pri.length?'<div class="lbl" style="margin-top:14px">📋 To call</div>':'')+(r.rows.length?memberTable(r.rows,false)+pager(r):'<span class="muted">No other members to call right now.</span>');
  L.innerHTML=html;wire(r);}
 function pager(r){return `<div class="pager2"><button class="sec" id="pv" aria-label="Previous page" ${r.page==0?'disabled':''}>‹ Prev</button>
