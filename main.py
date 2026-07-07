@@ -928,26 +928,42 @@ def _on_time(c, email, ts_utc, action):
     if not loc: return None
     tmin=_mins(st['in'] if action=='in' else st['out'])
     return 1 if abs((loc.hour*60+loc.minute)-tmin)<=GRACE_MIN else 0
+def _parse_utc(ts):
+    try: dt=datetime.datetime.fromisoformat(ts)
+    except (ValueError,TypeError): return None
+    return dt.replace(tzinfo=datetime.timezone.utc) if dt.tzinfo is None else dt.astimezone(datetime.timezone.utc)
+def _overlap_h(a,b,s,e):
+    lo=a if a>s else s; hi=b if b<e else e
+    return max(0.0,(hi-lo).total_seconds()/3600.0)
 def _worked_hours(c, email, tzname):
-    tz=_tz(tzname); today=datetime.datetime.now(tz).date().isoformat()
-    total=0.0; open_in=None
+    """Hours inside today's local-day window: pair in→out, CLIP each shift to [today 00:00, +1d).
+    All arithmetic in UTC, so DST offset changes and cross-midnight/forgot-to-punch-out shifts are correct."""
+    tz=_tz(tzname); utc=datetime.timezone.utc; now_utc=datetime.datetime.now(utc)
+    ds=datetime.datetime.now(tz).replace(hour=0,minute=0,second=0,microsecond=0).astimezone(utc)
+    de=ds+datetime.timedelta(days=1)
+    total=0.0; open_utc=None
     for r in c.execute("SELECT action,ts FROM time_punches WHERE actor=? ORDER BY id",(email,)):
-        loc=_to_local(r['ts'],tzname)
-        if not loc or loc.date().isoformat()!=today: continue
-        if r['action']=='in': open_in=loc
-        elif r['action']=='out' and open_in: total+=(loc-open_in).total_seconds()/3600.0; open_in=None
-    if open_in: total+=(datetime.datetime.now(tz)-open_in).total_seconds()/3600.0
+        dt=_parse_utc(r['ts'])
+        if not dt: continue
+        if r['action']=='in': open_utc=dt
+        elif r['action']=='out' and open_utc: total+=_overlap_h(open_utc,dt,ds,de); open_utc=None
+    if open_utc: total+=_overlap_h(open_utc,now_utc,ds,de)   # still on the clock
     return round(total,2)
 def _punch_status(c, email):
-    """Today's first-in / last-out / on-clock / hours (advocate tz)."""
-    tzname=_sched_tz(c,email); tz=_tz(tzname); today=datetime.datetime.now(tz).date().isoformat()
-    fin=lout=None; on=False; in_ot=out_ot=None
-    for r in c.execute("SELECT action,ts,on_time FROM time_punches WHERE actor=? ORDER BY id",(email,)):
-        loc=_to_local(r['ts'],tzname)
-        if not loc or loc.date().isoformat()!=today: continue
-        hm=loc.strftime('%H:%M')
-        if r['action']=='in': fin=fin or hm; in_ot=r['on_time']; on=True
-        else: lout=hm; out_ot=r['on_time']; on=False
+    """on_clock from the LAST punch (matches /api/adv/timecard); display today's local in/out."""
+    tzname=_sched_tz(c,email); today=datetime.datetime.now(_tz(tzname)).date().isoformat()
+    rows=list(c.execute("SELECT action,ts,on_time FROM time_punches WHERE actor=? ORDER BY id",(email,)))
+    last=rows[-1] if rows else None
+    on=bool(last and last['action']=='in')
+    fin=lout=in_ot=out_ot=None
+    if on:
+        loc=_to_local(last['ts'],tzname); fin=loc.strftime('%H:%M') if loc else None; in_ot=last['on_time']
+    else:
+        for r in rows:
+            loc=_to_local(r['ts'],tzname)
+            if not loc or loc.date().isoformat()!=today: continue
+            if r['action']=='in' and fin is None: fin=loc.strftime('%H:%M'); in_ot=r['on_time']
+            if r['action']=='out': lout=loc.strftime('%H:%M'); out_ot=r['on_time']
     return {'in':fin,'out':(None if on else lout),'on_clock':on,'hours':_worked_hours(c,email,tzname),
             'in_ontime':in_ot,'out_ontime':out_ot}
 def _ot_status(c, email, worked):

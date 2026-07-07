@@ -350,9 +350,27 @@ ADVOCATE_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name=
 #stageSeg button.on{background:#2563eb;border-color:#2563eb;color:#fff}
 .savedbar{border:1px solid #16a34a;background:#f0fdf4;border-radius:8px;padding:8px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .prihdr{font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;margin:6px 0}
-tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e0b;font-size:14px}</style></head><body>
-<header><h1>📞 My Members</h1><span id="punch" style="margin-left:12px"></span><span class="sp"></span><span class="me" id="tally"></span><span class="me">__ME__</span></header>
+tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e0b;font-size:14px}
+/* slim status deck: punch clock + day stats */
+.deck{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:8px 10px;margin-bottom:12px;box-shadow:0 1px 2px rgba(15,23,42,.05)}
+.deck .sp2{flex:1 1 8px}
+.pbtn{display:inline-flex;align-items:center;gap:7px;border:none;border-radius:10px;padding:9px 16px;font:var(--fw-bold) 13px/1 var(--font);color:#fff;cursor:pointer;white-space:nowrap;transition:filter .15s,transform .05s}
+.pbtn:hover{filter:brightness(1.07)}.pbtn:active{transform:translateY(1px)}
+.pbtn.off{background:var(--good)}.pbtn.on{background:var(--warn)}
+.pdot{width:7px;height:7px;border-radius:50%;background:#fff;animation:ppulse 1.7s infinite}
+@keyframes ppulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55)}70%{box-shadow:0 0 0 6px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.pstat{font-size:var(--fs-sm);color:var(--muted);line-height:1.3;white-space:nowrap;min-width:0}
+.pstat b{color:var(--ink);font-variant-numeric:tabular-nums}
+.pstat .sch{color:var(--faint);font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis}
+.pills{display:flex;gap:6px}
+.pill{display:flex;flex-direction:column;align-items:center;min-width:52px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:4px 9px}
+.pill .n{font:var(--fw-heavy) 17px/1 var(--font);font-variant-numeric:tabular-nums;color:var(--ink)}
+.pill .l{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-top:3px;white-space:nowrap}
+.pill.brand .n{color:var(--brand)}.pill.good .n{color:var(--good)}
+@media(max-width:560px){.pstat .sch{max-width:150px}.pill{min-width:44px;padding:3px 7px}.pill .n{font-size:15px}}</style></head><body>
+<header><h1>📞 My Members</h1><span class="sp"></span><span class="me">__ME__</span></header>
 <div class="wrap">
+<div id="deck" class="deck"></div>
 <div class="tabs" id="tabs"></div>
 <div id="list" class="panel">Loading…</div>
 </div><div class="toast" id="toast"></div>
@@ -362,16 +380,20 @@ const SMS_ENABLED=true; // texting ON — unbranded texts, no MLR required
 const VIEWS=[['queue','📋 To call'],['done','✅ Done today']];  // callbacks ride in the ⭐ Priority band at the top of To call
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
 const SIT=['Reached someone else','Health event / hospitalized','Appointment changed'];
-async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
-async function loadTimecard(){try{const tc=await api('/api/adv/timecard');const on=tc.on_clock;
- const since=tc.since?new Date(tc.since).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
- const status=on?`on the clock${since?' since '+since:''} · ${tc.hours_today}h`:(tc.hours_today?`off · ${tc.hours_today}h today`:'off the clock');
- const sched=tc.sched_text?('Required: '+tc.sched_text):'Schedule: work honestly — time is still tracked';
- $('punch').innerHTML=`<button class="${on?'callbtn':'good'}" style="${on?'background:#b45309;':''}padding:5px 12px;font-size:13px" onclick="punchClock()">🕐 Punch ${on?'Out':'In'}</button> <span class="muted" style="font-size:11px">${esc(status)} · ${esc(sched)}</span>`;
-}catch(e){}}
+let _TC=null,_SUM=null;
+async function tally(){try{_SUM=await api('/api/adv/summary');renderDeck();}catch(e){}}
+async function loadTimecard(){try{_TC=await api('/api/adv/timecard');renderDeck();}catch(e){}}
+function fmtDur(ms){const m=Math.max(0,Math.round(ms/60000));return (m>=60?Math.floor(m/60)+'h ':'')+(m%60)+'m';}
+function renderDeck(){const d=$('deck');if(!d)return;const tc=_TC||{},s=_SUM||{},on=!!tc.on_clock;
+ const main=(on&&tc.since)?`<b>⏱ ${fmtDur(Date.now()-new Date(tc.since).getTime())}</b> on the clock`:`<b>${tc.hours_today||0}h</b> today`;
+ const sch=tc.sched_text?esc(tc.sched_text):'work honestly · time still tracked';
+ const btn=`<button class="pbtn ${on?'on':'off'}" onclick="punchClock()">${on?'<span class="pdot"></span>Punch Out':'🕐 Punch In'}</button>`;
+ const pill=(n,l,cls)=>`<div class="pill ${cls||''}"><span class="n">${n??0}</span><span class="l">${l}</span></div>`;
+ d.innerHTML=btn+`<div class="pstat">${main}<div class="sch">${sch}</div></div><span class="sp2"></span>`
+  +`<div class="pills">${pill(s.forms_today,'forms today','good')}${pill(s.forms_month,'this month')}${pill(s.today,'worked','brand')}${pill(s.connected,'connected','brand')}</div>`;}
 async function punchClock(){const name=prompt('Type your name to sign this punch:');if(!name||!name.trim())return;
  try{const r=await api('/api/adv/punch',{method:'POST',body:JSON.stringify({signature:name.trim()})});
- toast(r.action==='in'?'🕐 Punched in — you are on the clock':'🕐 Punched out — '+r.hours_today+'h today');loadTimecard();}
+ toast(r.action==='in'?'🕐 Punched in — on the clock':'🕐 Punched out — '+r.hours_today+'h today');loadTimecard();}
  catch(e){toast('Punch failed — try again');}}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
@@ -567,6 +589,6 @@ async function saveOutcome(){
   document.querySelectorAll('#card .dgrid [data-o]').forEach(x=>x.classList.remove('on'));
   savedBanner(d);   // stay on the card — advocate navigates with the buttons or tabs
  }finally{BUSY=false;}}
-tally();load();loadTimecard();setInterval(loadTimecard,60000);
+tally();load();loadTimecard();setInterval(loadTimecard,60000);setInterval(()=>{if(_TC&&_TC.on_clock)renderDeck();},30000);
 </script></body></html>"""
 ADVOCATE_HTML = ADVOCATE_HTML.replace('__CSS__', CSS).replace('__JSC__', JS_COMMON)
