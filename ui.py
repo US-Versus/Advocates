@@ -375,7 +375,7 @@ tr.prow td{background:#fffdf5}tr.prow td:first-child{border-left:3px solid #f59e
 <div id="list" class="panel">Loading…</div>
 </div><div class="toast" id="toast"></div>
 <script>__JSC__
-let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[],RUNQ=[],RUNI=0,RUNNING=false;
+let VIEW='queue',PAGE=0,M=null,OPENMID=null,LASTROWS=[];
 const SMS_ENABLED=true; // texting ON — unbranded texts, no MLR required
 const VIEWS=[['queue','📋 To call'],['done','✅ Done today']];  // callbacks ride in the ⭐ Priority band at the top of To call
 const DISP=['Left Voicemail','No Answer','Bad Number','Refused / Remove','DQ — Clinical','Deceased','Skipped'];
@@ -416,8 +416,8 @@ async function load(){tabs();const L=$('list');
  let pri=[];
  if(VIEW==='queue'&&PAGE===0){try{const p=await api('/api/adv/list?view=priority&page=0');pri=p.rows||[];}catch(e){}}
  if(!r.rows.length&&!pri.length){L.innerHTML='<span class="muted">All caught up — no members to call right now.</span>';return;}
- LASTROWS=[...pri.map(x=>x.member_id),...r.rows.map(x=>x.member_id)];   // priority members dial first
- let html=`<div class="row" style="margin-bottom:8px"><button class="good" onclick="startRun()">⚡ Rapid-dial next ${Math.min(5,LASTROWS.length)}</button><span class="muted" style="font-size:11px">text · dial · one-tap outcome · auto-advance through the queue</span></div>`;
+ LASTROWS=[...pri.map(x=>x.member_id),...r.rows.map(x=>x.member_id)];   // priority members open first
+ let html='';
  if(pri.length){const nd=pri.filter(x=>x.callback_at&&x.callback_at<=new Date().toISOString()).length;
   html+=`<div class="prihdr">⭐ Priority — ${pri.length} scheduled callback${pri.length>1?'s':''}${nd?` · ${nd} due now`:''}</div>`+memberTable(pri,true);}
  html+=(pri.length?'<div class="lbl" style="margin-top:14px">📋 To call</div>':'')+(r.rows.length?memberTable(r.rows,false)+pager(r):'<span class="muted">No other members to call right now.</span>');
@@ -487,50 +487,6 @@ function gvOpen(url){window.open(url,'gv','popup,width=520,height=760,left='+Mat
 async function copyText(){if(!SMS_ENABLED){toast('💬 Texting is off for now — use Call');return;}const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind:'text'})});M.text_click_at=r.ts;
  try{await navigator.clipboard.writeText(M.phone_e164||'');}catch(e){}
  gvOpen(M.text_url);toast('📋 Number copied — paste it in the Google Voice To field');}
-function histHtml(x){return (x.hist||[]).map(h=>`<div><span class="dot ${h.cls}">${h.cls==='C'?'●':h.cls==='A'?'○':h.cls==='B'?'✖':'·'}</span> <span class="muted">${h.date||'—'}</span> ${esc(h.event_type)} — ${esc((h.detail||'').slice(0,90))}</div>`).join('')||'<span class="muted">fresh — no prior events</span>';}
-async function startRun(){if(!LASTROWS.length){toast('Nothing to dial');return;}RUNQ=LASTROWS.slice(0,5);RUNI=0;RUNNING=true;await stepRun();}
-async function stepRun(){if(RUNI>=RUNQ.length){return endRun(true);}
- M=await api('/api/adv/open/'+RUNQ[RUNI]);M.call_click_at=null;M.text_click_at=null;
- $('list').innerHTML=`<div class="panel"><div class="row"><b>⚡ Rapid dial — ${RUNI+1} of ${RUNQ.length}</b><span style="flex:1"></span><button class="sec" onclick="endRun(false)">exit to list</button></div>
-  <div class="big">${esc(M.first)} ${esc(M.last)} <span class="muted" style="font-size:13px">${M.age??''} ${M.city?'· '+esc(M.city):''} ${esc(M.state)}</span></div>
-  <div style="margin:4px 0">${(M.quals||'').split(';').filter(Boolean).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')} ${(M.sflags||'').split(';').filter(Boolean).map(f=>`<span class="sflag">${esc(f)} — verify</span>`).join('')}</div>
-  <div class="muted"><b style="color:#2563eb">${esc((M.stage_title||'').split('(')[0])}</b>${(M.stage==='pre_hcp'||M.stage==='post_hcp')?` — attempt ${M.stage_attempt}/${M.max_attempts}`:''}${M.hcp_date?' · HCP appt '+M.hcp_date:''} · ${M.conn}/${M.att} lifetime · last conn ${M.last_conn||'never'}</div>
-  <div class="row" style="margin:12px 0">
-   <button class="good callbtn" onclick="go('call')">📞 Call</button>
-   <button class="callbtn" style="background:#2563eb" onclick="copyText()">📱 Text</button>
-   <span class="muted" style="font-size:11px">tap Call → talk or leave a message → tap the outcome below · 📱 copies the number for the To field</span></div>
-  <div class="lbl">Call log</div><div class="hist">${histHtml(M)}</div>
-  <div class="lbl" style="margin-top:10px">Note <span class="muted" style="text-transform:none;font-weight:400">— always saved</span></div>
-  <textarea id="note" placeholder="what happened…" style="width:100%;height:40px"></textarea>
-  <div class="lbl" style="margin-top:8px">Outcome — one tap logs &amp; loads the next</div>
-  <div class="dgrid">
-   <button class="good" onclick="openGuide()">🟢 Connected → guide</button>
-   <button class="sec" onclick="runDisp('Reached someone else')">👥 Someone else answered</button>
-   <button class="sec" onclick="runDisp('Health event / hospitalized')">🏥 Health event</button>
-   <button class="sec" onclick="runAppt()">📆 Appt changed…</button>
-   <button class="sec" onclick="runDisp('Left Voicemail')">📮 Left voicemail</button>
-   <button class="sec" onclick="runDisp('No Answer')">🔕 No answer</button>
-   <button class="sec" onclick="runDisp('Bad Number')">☎️ Bad number</button>
-   <button class="sec" onclick="runDisp('Deceased')">🕊 Deceased</button>
-   <button class="sec" onclick="runCb()">📅 Callback…</button>
-   <button class="sec" onclick="runDisp('Skipped','skipped in rapid dial')">⏭ Skip</button></div>
-  <div id="guide" style="display:none"></div></div>`;
- window.scrollTo({top:0,behavior:'smooth'});}
-async function runDisp(d,note){if(BUSY)return;const nb=$('note');const n=note||(nb?nb.value:'');
- BUSY=true;
- try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:d,note:n,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});toast(d+' logged — next');RUNI++;tally();stepRun();}
- finally{BUSY=false;}}
-async function runAppt(){if(BUSY)return;const t=prompt('New appointment date (YYYY-MM-DD):');if(!t)return;
- BUSY=true;
- try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:'Appointment changed',hcp_date:t.slice(0,10),note:($('note')?$('note').value:''),served_at:M.served_at,call_click_at:M.call_click_at})});toast('Appt updated — cadence re-timed');RUNI++;tally();stepRun();}
- catch(e){toast('Enter a valid date YYYY-MM-DD')}
- finally{BUSY=false;}}
-async function runCb(){if(BUSY)return;const t=prompt('Callback date & time (YYYY-MM-DD HH:MM):');if(!t)return;
- BUSY=true;
- try{await api('/api/adv/disposition',{method:'POST',body:JSON.stringify({member_id:M.member_id,disposition:'Connected — Callback Scheduled',callback_at:t.replace(' ','T'),served_at:M.served_at,call_click_at:M.call_click_at})});RUNI++;tally();stepRun();}
- catch(e){toast('Enter a valid future date/time');}
- finally{BUSY=false;}}
-function endRun(done){RUNNING=false;RUNQ=[];if(done)toast('⚡ Rapid dial complete — queue worked');load();}
 async function go(kind){const r=await api('/api/adv/click',{method:'POST',body:JSON.stringify({member_id:M.member_id,kind})});
  if(kind==='call')M.call_click_at=r.ts;else M.text_click_at=r.ts;
  gvOpen(kind==='call'?M.call_url:M.text_url);}
@@ -568,7 +524,7 @@ async function submitGuide(){
   const r=await api('/api/adv/guide_submit',{method:'POST',body:JSON.stringify({member_id:M.member_id,stage:M.stage,answers,served_at:M.served_at,call_click_at:M.call_click_at,text_click_at:M.text_click_at})});
   if(r.dup){toast('Already saved — '+r.outcome);return;}   // retry of a recorded submit: no re-advance
   toast('Saved — '+r.outcome);tally();
-  if(RUNNING){RUNI++;stepRun();}else{savedBanner(r.outcome);}   // stay on the card — advocate chooses where to go
+  savedBanner(r.outcome);   // stay on the card — advocate chooses where to go
  }finally{BUSY=false;}}
 async function saveOutcome(){
  if(BUSY)return;
