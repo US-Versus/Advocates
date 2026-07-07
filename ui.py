@@ -71,7 +71,8 @@ table,.sheet,.mtable{border-collapse:collapse;width:100%;font-size:var(--fs-sm)}
 td,th,.sheet td,.sheet th{border-bottom:1px solid var(--line);padding:6px var(--s2);text-align:left}
 th,.sheet th,.mtable th{font-weight:var(--fw-bold);color:var(--ink-2);white-space:nowrap}
 .mtable th{cursor:pointer;user-select:none}.mtable td{white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
-.sheet td{white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+.sheet td{white-space:normal;word-break:break-word;max-width:190px;vertical-align:top}
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .mrowx,.sheet tr.rowx{cursor:pointer}.mrowx:hover,.sheet tr.rowx:hover{background:var(--surface-2)}
 .dot{font-weight:var(--fw-heavy)}.C{color:var(--good)}.A{color:var(--warn)}.B{color:var(--bad)}
 .hist{max-height:210px;overflow-y:auto;font-size:var(--fs-sm);border:1px solid var(--line);border-radius:var(--r);padding:var(--s2) var(--s3);background:var(--surface-2)}
@@ -364,14 +365,14 @@ const SIT=['Reached someone else','Health event / hospitalized','Appointment cha
 async function tally(){const s=await api('/api/adv/summary');$('tally').textContent=`✅ ${s.forms_today} forms today · ${s.forms_month} this month · ${s.today} worked · ${s.connected} connected`;}
 function tabs(){$('tabs').innerHTML=VIEWS.map(v=>`<div class="tab ${v[0]===VIEW?'on':''}" data-v="${v[0]}">${v[1]}</div>`).join('');
  $('tabs').querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>{VIEW=t.dataset.v;PAGE=0;OPENMID=null;load();});}
-function memberTable(rows,pri){return `<table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
+function memberTable(rows,pri){return `<div class="tscroll"><table class="sheet"><tr><th></th><th>Member</th><th>Age</th><th>St</th><th>Stage</th><th>HCP appt</th><th>Next due</th><th title="connections / attempts — your calls">Conn/Att</th><th>Outcome</th><th>Note</th><th>Quals</th></tr>`+
   rows.map(x=>{const due=x.callback_at&&x.callback_at<=new Date().toISOString();
    return `<tr class="rowx${pri?' prow':''}" data-mid="${x.member_id}"><td aria-hidden="true">${pri?'⭐':'▸'}</td><td><b>${esc(x.first)} ${esc(x.last)}</b></td><td>${x.age??''}</td><td>${esc(x.st)}</td>
    <td>${(x.stage||'initial').replace('_',' ')} <span class="muted">${x.stage_attempts?('att '+x.stage_attempts+'/3'):''}</span></td>
    <td>${x.hcp_date||''}</td><td class="${due?'due':''}">${x.callback_at?x.callback_at.slice(5,16):''}</td>
    <td style="font-weight:650;color:${x.conn>0?'#0b6e4f':(x.att>0?'#b45309':'#666')}">${x.conn}/${x.att}</td><td>${esc((x.outcome||'').slice(0,26))}</td><td class="muted">${esc((x.note||'').slice(0,40))}</td>
    <td>${(x.quals||'').split(';').filter(Boolean).slice(0,2).map(q=>`<span class="qtag">${esc(q)}</span>`).join('')}</td></tr>
-   <tr style="display:none" data-d="${x.member_id}"><td colspan="11"></td></tr>`;}).join('')+'</table>';}
+   <tr style="display:none" data-d="${x.member_id}"><td colspan="11"></td></tr>`;}).join('')+'</table></div>';}
 async function load(){tabs();const L=$('list');
  const r=await api(`/api/adv/list?view=${VIEW}&page=${PAGE}`);
  if(VIEW==='done'){
