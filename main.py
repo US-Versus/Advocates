@@ -553,15 +553,19 @@ CAPTURE_MAP = {  # guide (stage,seq) -> durable member event: the answer becomes
 _HCP_ENT = dict(attr='Next HCP appointment', kind='E', grp=None, fan=False)   # any sched='hcp' question
 BACKUP_DIR = os.environ.get('DB_BACKUP_DIR', os.path.join(os.path.dirname(os.path.abspath(DB)), 'db-backups'))
 
-def _integrity_guard():
-    """Bridge safety net (Stage 0): on boot verify the DB isn't corrupt. If it is,
-    preserve the corrupt file aside (never destructive) and restore the newest
-    snapshot that itself passes quick_check. Snapshots are written hourly by the
-    backup job into BACKUP_DIR (same bucket, /data/db-backups in prod)."""
+def _integrity_check():
+    """Detect-only (Stage 0): quick_check the DB and log LOUDLY if it looks corrupt.
+    Runs in a BACKGROUND thread a minute after startup, so it NEVER delays the port
+    bind — a blocking quick_check on the ~18MB DB over a cold gcsfuse mount can exceed
+    the Cloud Run startup probe (that caused a failed deploy). It does NOT auto-restore:
+    during a rolling deploy the outgoing instance is still writing, so a boot-time check
+    can see a transient torn read, and auto-restoring then would clobber live writes with
+    a stale snapshot. Recovery is deliberate — bucket versioning + hourly snapshots in
+    BACKUP_DIR."""
     try:
         corrupt = False; detail = None
         try:
-            c = sqlite3.connect(DB, timeout=5.0)
+            c = sqlite3.connect(DB, timeout=15.0)
             try:
                 r = c.execute("PRAGMA quick_check").fetchone()
             finally:
@@ -569,29 +573,23 @@ def _integrity_guard():
             if not (r and str(r[0]).lower() == 'ok'): corrupt = True; detail = (r and r[0])
         except sqlite3.DatabaseError as e:            # severe corruption makes quick_check itself raise
             corrupt = True; detail = str(e)
-        if not corrupt:
-            return
-        print('FATAL: app.db failed integrity check (%r) — attempting snapshot restore' % (detail,))
-        snaps = sorted(f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')) if os.path.isdir(BACKUP_DIR) else []
-        good = None
-        for f in reversed(snaps):                       # newest first
-            p = os.path.join(BACKUP_DIR, f)
-            try:
-                cc = sqlite3.connect(p, timeout=5.0)
-                rr = cc.execute("PRAGMA quick_check").fetchone(); cc.close()
-                if rr and str(rr[0]).lower() == 'ok': good = p; break
-            except Exception: continue
-        if not good:
-            print('CRITICAL: no good snapshot in %s — serving as-is; investigate NOW' % BACKUP_DIR); return
-        import shutil
-        aside = DB + '.corrupt-' + datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
-        try: shutil.copyfile(DB, aside)
-        except Exception as e: print('WARN: could not preserve corrupt DB aside:', e)
-        shutil.copyfile(good, DB)
-        print('RESTORED app.db from snapshot %s (corrupt copy kept at %s)' % (good, aside))
+        if corrupt:
+            snaps = sorted(f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')) if os.path.isdir(BACKUP_DIR) else []
+            print('CRITICAL: app.db failed integrity check (%r). Newest snapshot: %s (%s). App is '
+                  'serving; if this is NOT a transient mid-deploy read, restore deliberately from a '
+                  'db-backups/ snapshot or a prior bucket version.'
+                  % (detail, (snaps[-1] if snaps else '(none)'), BACKUP_DIR))
+        else:
+            print('integrity check: ok')
     except Exception as e:
-        print('integrity guard skipped:', e)
-_integrity_guard()
+        print('integrity check skipped:', e)
+
+def _start_integrity_check():
+    try:
+        t = threading.Timer(60.0, _integrity_check); t.daemon = True; t.start()   # after the deploy settles; non-blocking
+    except Exception as e:
+        print('integrity check not scheduled:', e)
+_start_integrity_check()
 
 def _capture_startup():
     """Log-only sanity: every CAPTURE_MAP key must be a live question. Plus one additive index (idempotent)."""
