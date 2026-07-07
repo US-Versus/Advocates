@@ -593,6 +593,46 @@ def _start_integrity_check():
         print('integrity check not scheduled:', e)
 _start_integrity_check()
 
+def _cleanup_dnc():
+    """One-time-ish, idempotent consolidation (runs in the BACKGROUND, off the request path,
+    so it never delays startup): mark do-not-call / bad-number members refused=1 and pull any
+    that are still in an open advocate queue. Categories (per director): confirmed 'Do Not Call'
+    status, do-not-call candidates (dnc_cand), and members with clear wrong-number/not-in-service/
+    disconnected notes. Deceased is handled ONLY via the app's Deceased disposition — free-text
+    'deceased' notes are NOT used (they are usually about a relative, not the member)."""
+    try:
+        with _WRITE_LOCK:                       # serialize the whole cleanup vs live writers (bridge)
+            c = db()
+            c.execute("UPDATE member_core SET refused=1 WHERE refused=0 AND status='Do Not Call'")
+            c.execute("UPDATE member_core SET refused=1 WHERE refused=0 AND dnc_cand=1")
+            c.execute("""UPDATE member_core SET refused=1 WHERE refused=0 AND member_id IN (
+                SELECT DISTINCT member_id FROM comm_hist WHERE
+                    lower(detail) LIKE '%wrong number%' OR lower(detail) LIKE '%not in service%'
+                    OR lower(detail) LIKE '%disconnected%' OR lower(detail) LIKE '%number no longer%'
+                    OR lower(detail) LIKE '%out of service%')""")
+            c.commit()
+            rows = c.execute("""SELECT bm.batch_id, bm.member_id, b.advocate FROM batch_members bm
+                JOIN batches b ON b.id=bm.batch_id JOIN member_core m ON m.member_id=bm.member_id
+                WHERE b.status='open' AND bm.state IN('pending','served','callback') AND m.refused=1""").fetchall()
+            for r in rows:
+                c.execute("UPDATE batch_members SET state='removed' WHERE batch_id=? AND member_id=? AND state IN('pending','served','callback')",
+                          (r['batch_id'], r['member_id']))
+                c.execute("INSERT INTO comm_hist(member_id,date,event_type,detail,cls) VALUES(?,?,?,?,?)",
+                          (r['member_id'], now()[:10], 'Unassigned from advocate', 'Auto-removed — do-not-call / bad-number cleanup', 'O'))
+            c.commit()
+            total = c.execute("SELECT COUNT(*) n FROM member_core WHERE refused=1").fetchone()['n']
+            print('DNC cleanup: %d refused total; pulled %d flagged members from open queues' % (total, len(rows)))
+            c.close()
+    except Exception as e:
+        print('DNC cleanup skipped:', e)
+
+def _start_cleanup_dnc():
+    try:
+        t = threading.Timer(20.0, _cleanup_dnc); t.daemon = True; t.start()   # background; idempotent; ~no-op after first run
+    except Exception as e:
+        print('DNC cleanup not scheduled:', e)
+_start_cleanup_dnc()
+
 def _capture_startup():
     """Log-only sanity: every CAPTURE_MAP key must be a live question. Plus one additive index (idempotent)."""
     try:
@@ -661,7 +701,7 @@ def adv_list(req: Request, view: str='queue', page: int=0):
            "callbacks":"bm.state='callback' AND replace(bm.callback_at,'T',' ')>datetime('now','localtime')"}.get(view)
         if not w: raise HTTPException(400,'bad view')
         base=f"""FROM batch_members bm JOIN batches b ON b.id=bm.batch_id JOIN member_core m ON m.member_id=bm.member_id
-            WHERE b.advocate=? AND b.status='open' AND {w}"""
+            WHERE b.advocate=? AND b.status='open' AND m.refused=0 AND {w}"""   # do-not-call/dead/bad-number (refused=1) never appear in the queue — forward-safe
         tot=c.execute(f"SELECT COUNT(*) n {base}",(email,)).fetchone()['n']
         rows=c.execute(f"""SELECT bm.member_id, m.first,m.last,m.age,m.state st,m.quals,
             (SELECT COUNT(*) FROM dispositions d WHERE d.member_id=bm.member_id AND d.disposition LIKE 'Connected%') conn,
