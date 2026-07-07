@@ -128,7 +128,7 @@ MONITOR_HTML = ("""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
   <div class="pieleg" id="aggleg"></div>
   <h4>Call log</h4>
   <div style="max-height:340px;overflow-y:auto">
-   <table><thead><tr><th>When</th><th>Advocate</th><th>Member</th><th>Outcome</th><th>Note</th></tr></thead>
+   <table><thead><tr><th>When</th><th>Advocate</th><th>Member</th><th>Tier</th><th>Outcome</th><th>Note</th></tr></thead>
    <tbody id="agglog"></tbody></table>
   </div>
  </div>
@@ -175,6 +175,10 @@ MONITOR_HTML = ("""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="
 <div class="toast" id="toast"></div>
 <script>__JSC__
 let BUSY=false;
+// Tiers are director-assigned labels stored by the Review Dashboard in localStorage
+// (crm_tiers). /monitor is same-origin as /dashboard, so we read them directly here.
+function readTiers(){try{return JSON.parse(localStorage.getItem('crm_tiers')||'{}')||{};}catch(e){return {};}}
+function tierChip(t){return t?`<span class="tchip" style="background:var(--brand)">${esc(t)}</span>`:'<span class="muted">—</span>';}
 const DCOL={'Reached someone else':'var(--brand)','Left Voicemail':'#64748b','No Answer':'var(--warn)',
  'Bad Number':'var(--bad)','Refused / Remove':'var(--bad)','Deceased':'var(--bad)','DQ — Clinical':'var(--bad)',
  'Health event / hospitalized':'var(--warn)','Appointment changed':'var(--brand)','Skipped':'var(--faint)'};
@@ -198,12 +202,14 @@ function render(d){
  const pb=piebar(ag.dispositions);
  $('aggbar').innerHTML=pb.empty?'<div style="background:var(--faint);width:100%">no calls yet today</div>':pb.bar;
  $('aggleg').innerHTML=pb.leg;
+ const TIERS=readTiers();
  $('agglog').innerHTML=ag.log.length?ag.log.slice().reverse().map(x=>{
   const t=x.t||'', who=(x.name||'').trim()||x.member_id;
   return `<tr><td class="muted">${t}</td><td>${esc(x.display)}</td><td>${esc(who)}</td>`
+   +`<td>${tierChip(TIERS[x.member_id])}</td>`
    +`<td><span class="dot ${dclass(x.disposition)}">●</span> ${esc(x.disposition)}</td>`
    +`<td class="muted">${esc((x.note||'').slice(0,60))}</td></tr>`;}).join('')
-  :'<tr><td colspan="5" class="muted">No calls logged today.</td></tr>';
+  :'<tr><td colspan="6" class="muted">No calls logged today.</td></tr>';
  $('advboxes').innerHTML=d.advocates.map(a=>{
   const pbx=piebar(a.dispositions), last=a.last_local||'—';
   return `<div class="advcard">
