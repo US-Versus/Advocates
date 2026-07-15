@@ -18,3 +18,8 @@ __pycache__/
 
 # 7.8MB dashboard lives on the GCS data volume (/data/dashboard.html), not the image — upload to the bucket, never commit
 dashboard.html
+
+# ONAPGO report data/assets — live on the deploy bundle / GCS, never in git
+onapgo_tiers.json
+onapgo_assets/
+sa-key.json
